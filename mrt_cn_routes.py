@@ -123,12 +123,12 @@ GROUPS = {
         "gate": "cn_origin",
     },
     "cernet_edu": {
-        "name": "Education & Research Network",
+        "name": "Education & Research Network (China)",
         "asns": [4538, 23911, 7497],
         "gate": "cn_origin",
     },
     "china_domestic_backbone": {
-        "name": "China Domestic ",
+        "name": "China Domestic Backbone (China)",
         "asns": [4134, 4837, 9929, 9808, 4538, 23911, 7497, 146762],
         "gate": "cn_origin",
     },
@@ -721,6 +721,58 @@ def iter_mrt_records_bgpdump(path: Path, tool: str, allow_updates: bool = False,
                 except OSError:
                     pass
             proc.wait()
+
+
+# --- BGPKIT Parser (Rust; fastest, filters in-parser) ---------------------
+
+def build_target_asn_regex(groups: dict = GROUPS) -> str:
+    """Word-boundary regex matching any target ASN in an AS_PATH string.
+
+    Passed to `bgpkit-parser --as-path`, so filtering happens inside the Rust
+    parser and Python only receives the ~6% of records that can match a group.
+    """
+    asns = set()
+    for g in groups.values():
+        asns.update(g["asns"])
+    return r"\b(" + "|".join(str(a) for a in sorted(asns)) + r")\b"
+
+
+def iter_mrt_records_bgpkit(path: Path, tool: str, allow_updates: bool = False,
+                            groups: dict = GROUPS) -> Iterator[RouteRecord]:
+    """Stream RouteRecords via ``bgpkit-parser`` (Rust), filtering in-parser.
+
+    bgpkit-parser reads .gz/.bz2 directly and, with ``--as-path <regex>``, only
+    emits elements whose AS_PATH matches -- so the target-ASN pre-filter runs in
+    fast Rust, replacing the external grep stage. Default output is 14 pipe-
+    separated fields:
+        type|timestamp|peer_ip|peer_asn|prefix|as_path|origin|next_hop|...
+    (type is A=announce / W=withdraw; prefix at index 4, as_path at index 5).
+    """
+    pattern = build_target_asn_regex(groups)
+    proc = subprocess.Popen(
+        [tool, "--as-path", pattern, str(path)],
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, bufsize=1 << 20,
+    )
+    try:
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            parts = line.rstrip("\n").split("|")
+            if len(parts) < 6:
+                continue
+            if parts[0] == "W":  # withdrawal (updates only); no prefix ownership
+                continue
+            prefix = parts[4]
+            if not prefix:
+                continue
+            as_path = normalize_as_path(_parse_bgpdump_as_path(parts[5]))
+            yield RouteRecord(prefix, _ip_version_of(prefix.split("/")[0]), as_path)
+    finally:
+        if proc.stdout is not None:
+            try:
+                proc.stdout.close()
+            except OSError:
+                pass
+        proc.wait()
 
 
 # --- Native struct parser (dependency-free fast path) ---------------------
@@ -1828,7 +1880,10 @@ def process_file(mrt: MrtFile, groups: dict, group_buffers: dict, stats: Stats,
         return
     process_updates = allow_updates and mrt.dump_type == "update"
     # The native parser only reads RIB dumps; fall back to mrtparse for updates.
-    if parser_mode == "bgpdump" and external_tool:
+    if parser_mode == "bgpkit" and external_tool:
+        record_iter = iter_mrt_records_bgpkit(mrt.local_path, external_tool,
+                                              allow_updates=process_updates, groups=groups)
+    elif parser_mode == "bgpdump" and external_tool:
         record_iter = iter_mrt_records_bgpdump(mrt.local_path, external_tool,
                                                allow_updates=process_updates, groups=groups)
     elif parser_mode == "native" and not process_updates:
@@ -1944,28 +1999,45 @@ def run(args) -> int:
                          key, g.get("gate"), len(group_gates[key]))
 
     # --- parser selection ----------------------------------------------
-    #   mrtparse -> pure-Python, most compatible (updates, exotic formats)
+    #   bgpkit   -> Rust bgpkit-parser (fastest; filters in-parser via --as-path)
+    #   bgpdump  -> external C tool (+ grep pre-filter)
     #   native   -> built-in struct RIB parser, ~10x mrtparse, no external dep
-    #   bgpdump  -> external C tool (+ grep pre-filter), fastest when installed
-    #   auto     -> bgpdump if on PATH, else native
+    #   mrtparse -> pure-Python, most compatible (updates, exotic formats)
+    #   auto     -> bgpkit if on PATH, else bgpdump, else native
+    bgpkit_path = shutil.which("bgpkit-parser")
+    bgpdump_path = shutil.which("bgpdump")
     external_tool = None
-    if args.parser in ("auto", "bgpdump"):
-        external_tool = find_external_parser("bgpdump")
     if args.parser == "mrtparse":
         parser_mode = "mrtparse"
     elif args.parser == "native":
         parser_mode = "native"
-    elif args.parser == "bgpdump":
-        if external_tool:
-            parser_mode = "bgpdump"
+    elif args.parser == "bgpkit":
+        if bgpkit_path:
+            parser_mode, external_tool = "bgpkit", bgpkit_path
+        elif bgpdump_path:
+            stats.warn("bgpkit-parser not found; falling back to bgpdump")
+            parser_mode, external_tool = "bgpdump", bgpdump_path
         else:
-            stats.warn("bgpdump requested but not found on PATH; using native parser")
+            stats.warn("bgpkit-parser not found; falling back to native parser")
             parser_mode = "native"
-    else:  # auto
-        parser_mode = "bgpdump" if external_tool else "native"
+    elif args.parser == "bgpdump":
+        if bgpdump_path:
+            parser_mode, external_tool = "bgpdump", bgpdump_path
+        else:
+            stats.warn("bgpdump not found on PATH; using native parser")
+            parser_mode = "native"
+    else:  # auto -> prefer bgpkit
+        if bgpkit_path:
+            parser_mode, external_tool = "bgpkit", bgpkit_path
+        elif bgpdump_path:
+            parser_mode, external_tool = "bgpdump", bgpdump_path
+        else:
+            parser_mode = "native"
 
     parse_workers = args.parse_workers if args.parse_workers > 0 else (os.cpu_count() or 4)
-    if parser_mode == "bgpdump":
+    if parser_mode == "bgpkit":
+        LOG.info("using parser: bgpkit-parser (%s), --as-path in-parser filter", external_tool)
+    elif parser_mode == "bgpdump":
         LOG.info("using parser: bgpdump (%s) + grep pre-filter", external_tool)
     else:
         LOG.info("using parser: %s", parser_mode)
@@ -2155,11 +2227,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--min-v6-prefix", type=int, default=MIN_V6_PREFIXLEN,
                    help="Reject IPv6 prefixes shorter than this (default 10; also "
                         "removes ::/0 and other over-broad prefixes).")
-    p.add_argument("--parser", choices=["auto", "native", "bgpdump", "mrtparse"], default="auto",
-                   help="MRT parser: 'auto' uses bgpdump if available else the built-in "
-                        "native struct parser; 'native' forces the dependency-free fast "
-                        "parser (~10x mrtparse); 'bgpdump' forces the external C tool; "
-                        "'mrtparse' forces pure-Python mrtparse (most compatible).")
+    p.add_argument("--parser", choices=["auto", "bgpkit", "native", "bgpdump", "mrtparse"], default="auto",
+                   help="MRT parser: 'auto' prefers bgpkit-parser, then bgpdump, then the "
+                        "built-in native parser. 'bgpkit' = Rust bgpkit-parser (fastest, "
+                        "filters in-parser via --as-path); 'bgpdump' = external C tool + grep; "
+                        "'native' = dependency-free struct parser (~10x mrtparse); 'mrtparse' "
+                        "= pure Python (most compatible).")
     p.add_argument("--dry-run", action="store_true",
                    help="Only list the MRT files that would be downloaded/processed.")
     p.add_argument("--keep-cache", action="store_true",
