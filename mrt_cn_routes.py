@@ -1085,6 +1085,85 @@ def _iter_bgp4mp_announcements(data: dict) -> Iterator[RouteRecord]:
 # IV. Route matching / flushing into per-group buffers
 # ---------------------------------------------------------------------------
 
+# --- Per-route customer-cone gate (Global tier) ----------------------------
+# The Global tables must include an operator's real (possibly international)
+# customers but exclude prefixes merely reached through the operator's PEER or
+# UPSTREAM. A precomputed global customer-cone SET cannot tell these apart: an
+# origin that is a customer of the operator *somewhere* in CAIDA's topology
+# would be admitted even when THIS route reached the operator over a peer link.
+#
+# So the gate is evaluated per route on the actual AS_PATH: starting from an
+# operator seed ASN, every hop toward the origin must be provider->customer
+# (valley-free downstream). A single peer/upstream hop breaks the chain.
+#
+# _GATE_P2C (provider -> {customers}) and _GATE_CN (CN-registered origin ASNs)
+# are large read-only data. They are published into each parse worker via the
+# ProcessPool initializer (once per worker, never pickled per task); the main
+# process calls _init_gate_globals too so any non-pool path sees the same data.
+_GATE_P2C: dict = {}
+_GATE_CN: frozenset = frozenset()
+
+
+def _init_gate_globals(p2c: Optional[dict], cn: Optional[Iterable[int]]) -> None:
+    """Publish the customer-cone topology and CN-origin set into module globals.
+
+    Used as the parse ProcessPool ``initializer`` (runs once per worker) and
+    called directly in the main process. Keeping this data in module globals
+    avoids pickling the (large) p2c map on every per-file task.
+    """
+    global _GATE_P2C, _GATE_CN
+    _GATE_P2C = p2c or {}
+    _GATE_CN = frozenset(cn or ())
+
+
+def _ordered_seq(as_path) -> list[int]:
+    """Flatten an AS_PATH to an ordered ASN list from its AS_SEQUENCE segments.
+
+    Leftmost (collector side) -> rightmost (origin). AS_SET and confederation
+    segments are skipped: only ordered hops define a provider->customer chain.
+    Consecutive duplicates are collapsed so AS-path prepending (e.g. ``4837
+    4837 9808``) does not spuriously break the chain walk.
+    """
+    out: list[int] = []
+    for seg in normalize_as_path(as_path):
+        if seg.kind != "SEQ":
+            continue
+        for asn in seg.asns:
+            if not out or out[-1] != asn:
+                out.append(asn)
+    return out
+
+
+def path_customer_chain_ok(seq: list[int], seeds, p2c: dict) -> bool:
+    """True if the origin sits in an operator seed's customer cone ALONG THIS path.
+
+    ``seq`` is the ordered AS_PATH (see :func:`_ordered_seq`). For every position
+    ``i`` where ``seq[i]`` is an operator seed, every later hop toward the origin
+    must be provider->customer: ``seq[j+1]`` must be a customer of ``seq[j]``
+    (``seq[j+1] in p2c[seq[j]]``). A peer or upstream hop breaks the chain.
+    Returns True as soon as one seed yields an unbroken chain to the origin (a
+    seed that itself originates the prefix trivially qualifies).
+
+    Direction matters: an edge is only valid provider->customer. If the seed is
+    a *customer* of the next hop (customer->provider, i.e. an uphill link), the
+    chain breaks -- so a prefix reached via the operator's upstream is rejected
+    even though a relationship exists between the two ASes.
+    """
+    n = len(seq)
+    for i in range(n):
+        if seq[i] not in seeds:
+            continue
+        ok = True
+        for j in range(i, n - 1):
+            customers = p2c.get(seq[j])
+            if not customers or seq[j + 1] not in customers:
+                ok = False
+                break
+        if ok:
+            return True
+    return False
+
+
 def flush_route(
     record: RouteRecord,
     groups: dict,
@@ -1103,12 +1182,14 @@ def flush_route(
       originated by the operator's provincial/child ASNs that only transit the
       backbone).
     * Computes the CN->T1 verdict once (route-level).
-    * PER-GROUP ORIGIN GATE (if ``group_gates`` given): a matched group only
-      receives the prefix if the route's ORIGIN AS is in that group's allowed
-      set. This is how one run produces both a mainland-only table (allowed =
-      CN-origin ASNs) and an incl.-international table (allowed = the operator's
-      customer cone) -- and how a peer-transited foreign prefix (e.g. AS3462
-      via China Telecom) is kept out of both.
+    * PER-GROUP GATE (if ``group_gates`` given): each matched group applies its
+      own gate spec before receiving the prefix. A ``cn`` spec (China tier) keeps
+      the prefix only when the ORIGIN AS is CN-registered. A ``cone`` spec
+      (Global tier) keeps it when the origin is CN-registered (rule 2) OR the
+      origin is reachable from an operator seed through a valley-free
+      provider->customer chain ON THIS AS_PATH (rule 1) -- so a prefix reached
+      only via the operator's peer/upstream (e.g. AS3462 via China Telecom, or a
+      customer of the operator's peer) is kept out.
     """
     stats.total_raw_routes_seen += 1
 
@@ -1139,12 +1220,26 @@ def flush_route(
         return
 
     origins = route_origin_asns(record.as_path) if group_gates else None
+    ordered = None  # AS_PATH flattened on demand for customer_cone groups
     version_key = "v4" if record.ip_version == 4 else "v6"
     added_any = False
     for key in matched_groups:
-        gate = group_gates.get(key) if group_gates else None
-        if gate is not None and origins is not None and origins.isdisjoint(gate):
-            continue  # origin not allowed for this particular table
+        spec = group_gates.get(key) if group_gates else None
+        if spec is not None and origins is not None:
+            if spec["kind"] == "cn":
+                # China tier: origin must be a CN-registered ASN.
+                if origins.isdisjoint(_GATE_CN):
+                    continue
+            else:  # "cone" -- Global tier
+                # Keep if the origin is CN-registered (rule 2: CAIDA may miss it)
+                # OR reachable from an operator seed via a valley-free
+                # provider->customer chain on THIS path (rule 1). This excludes
+                # prefixes reached only over a peer/upstream link.
+                if origins.isdisjoint(_GATE_CN):
+                    if ordered is None:
+                        ordered = _ordered_seq(record.as_path)
+                    if not path_customer_chain_ok(ordered, spec["seeds"], _GATE_P2C):
+                        continue
         # Buffers are sets: a prefix seen via many peers is stored once.
         group_buffers[key][version_key].add(record.prefix)
         added_any = True
@@ -1879,7 +1974,15 @@ def build_provider_customer_map(text: str) -> dict:
 
 def customer_cone(seed_asns: Iterable[int], p2c: dict) -> set[int]:
     """All ASNs in the customer cone of ``seed_asns`` (seeds + transitive
-    customers, following only provider->customer edges)."""
+    customers, following only provider->customer edges).
+
+    NOTE: the Global-tier gate no longer uses this topological cone (it admitted
+    peer-reached prefixes -- an origin that is a customer of the operator
+    *somewhere* was let in even when this route reached the operator via a peer).
+    The gate now walks each route's own AS_PATH (see
+    :func:`path_customer_chain_ok`). This helper is kept as a standalone utility
+    for analysis/debugging.
+    """
     seen = set(seed_asns)
     stack = list(seen)
     while stack:
@@ -1928,14 +2031,20 @@ def load_provider_customer_map(downloader: "Downloader", url_templates: list,
 
 def build_group_gates(groups: dict, cn_origin_asns: Optional[set],
                       p2c: Optional[dict]) -> Optional[dict]:
-    """Build the per-group allowed-origin sets from each group's gate type.
+    """Build the per-group gate specs from each group's gate type.
 
-      * China tier (cn_origin): allowed = CN-registered origins (strict; mainland
-        only, no international customers).
-      * Global tier (customer_cone): allowed = the operator's CAIDA customer cone
-        (operator + real customers, incl. international; peers/upstreams merely
-        transited are excluded) UNION the CN origins (to also catch prefixes
-        CAIDA might have missed).
+      * China tier (cn_origin)     -> ``{"kind": "cn"}``: keep CN-registered
+        origins only (strict; mainland, no international customers).
+      * Global tier (customer_cone) -> ``{"kind": "cone", "seeds": frozenset}``:
+        keep origins reachable from an operator seed via a valley-free
+        provider->customer chain on the route's own AS_PATH (rule 1), UNION
+        CN-registered origins (rule 2, to catch prefixes CAIDA might miss).
+        Peers/upstreams merely transited are excluded.
+
+    The heavy data (the CN set and the CAIDA provider->customer map) is NOT
+    embedded here -- it lives in the ``_GATE_P2C`` / ``_GATE_CN`` module globals
+    (see :func:`_init_gate_globals`) so it is never pickled per parse task. The
+    ``cn`` / ``p2c`` arguments are used only to decide whether a group is gated.
 
     Returns None if every group ends up ungated (so gating can be skipped).
     """
@@ -1945,14 +2054,16 @@ def build_group_gates(groups: dict, cn_origin_asns: Optional[set],
     for key, g in groups.items():
         gate_type = g.get("gate", "none")
         if gate_type == "cn_origin":
-            allowed = set(cn) if cn else None
+            spec = {"kind": "cn"} if cn else None
         elif gate_type == "customer_cone":
-            cone = customer_cone(set(g["asns"]), p2c) if p2c else set()
-            allowed = (cone | cn) if (cone or cn) else None
+            # Gated when either the topology (rule 1) or the CN set (rule 2) is
+            # available; run() guarantees p2c is present for cone groups.
+            spec = ({"kind": "cone", "seeds": frozenset(g["asns"])}
+                    if (p2c or cn) else None)
         else:
-            allowed = None
-        gates[key] = allowed
-        if allowed is not None:
+            spec = None
+        gates[key] = spec
+        if spec is not None:
             any_gated = True
     return gates if any_gated else None
 
@@ -2122,10 +2233,19 @@ def run(args) -> int:
 
     group_gates = build_group_gates(GROUPS, cn_origin_asns, p2c)
     if group_gates:
-        for key, g in GROUPS.items():
-            if group_gates.get(key) is not None:
-                LOG.info("gate[%s] = %s (%d allowed origin ASNs)",
-                         key, g.get("gate"), len(group_gates[key]))
+        # Publish the shared gate data into this (main) process too; parse
+        # workers get their own copy via the ProcessPool initializer below.
+        _init_gate_globals(p2c, cn_origin_asns)
+        for key, spec in group_gates.items():
+            if spec is None:
+                continue
+            if spec["kind"] == "cn":
+                LOG.info("gate[%s] = cn_origin (%d CN-registered origin ASNs)",
+                         key, len(_GATE_CN))
+            else:
+                LOG.info("gate[%s] = customer_cone (per-path valley-free; "
+                         "%d seed ASN(s), %d providers in p2c, +%d CN origins)",
+                         key, len(spec["seeds"]), len(_GATE_P2C), len(_GATE_CN))
 
     # --- parser selection ----------------------------------------------
     #   bgpkit   -> Rust bgpkit-parser (fastest; filters in-parser via --as-path)
@@ -2223,7 +2343,12 @@ def run(args) -> int:
 
     downloaded.sort(key=_file_size, reverse=True)  # LPT: biggest first
 
-    with ProcessPool(max_workers=parse_workers) as ppool:
+    # The initializer publishes the (large) customer-cone topology + CN set into
+    # each worker ONCE (not pickled per task). group_gates itself is now tiny
+    # (just per-group kind + seed ASNs), so it still travels in the task tuple.
+    with ProcessPool(max_workers=parse_workers,
+                     initializer=_init_gate_globals,
+                     initargs=(p2c, cn_origin_asns)) as ppool:
         fut_to_mrt = {}
         for mrt in downloaded:
             fut = ppool.submit(_parse_file_worker, (mrt, parser_mode, external_tool, group_gates))

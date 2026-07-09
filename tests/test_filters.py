@@ -8,12 +8,19 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from mrt_cn_routes import (  # noqa: E402
     GROUPS,
     T1_ASNS,
+    RouteRecord,
+    Stats,
+    _init_gate_globals,
+    _ordered_seq,
     aggregate_prefixes,
     as_path_all_asns,
+    build_group_gates,
+    flush_route,
     is_cn_to_t1_path,
     is_public_prefix,
     normalize_as_path,
     path_contains_any_target,
+    path_customer_chain_ok,
 )
 
 
@@ -139,6 +146,88 @@ def test_aggregate_after_filtering_still_merges():
     # bogons (10/8, 192.0.2.x TEST-NET, 203.0.113 TEST-NET) dropped;
     # 1.1.0.0/24 + 1.1.1.0/24 aggregate to 1.1.0.0/23.
     assert merged == ["1.1.0.0/23"]
+
+
+# ---------------------------------------------------------------------------
+# Global-tier customer-cone gate: per-route valley-free path check.
+# Regression for prefixes reached via the operator's PEER / UPSTREAM being
+# wrongly admitted (e.g. 1.0.4.0/24 via AS_PATH 134823 58453 4826 2764 38803).
+# ---------------------------------------------------------------------------
+
+# _ordered_seq flattens SEQ segments and collapses AS-path prepending.
+def test_ordered_seq_collapses_prepend_and_skips_set():
+    assert _ordered_seq([4837, 4837, 9808, 9808, 9808]) == [4837, 9808]
+    # AS_SET is skipped (no ordering); only SEQ hops define the chain.
+    assert _ordered_seq([174, {4134, 4837}, 9808]) == [174, 9808]
+
+
+# A genuine provider->customer chain from a seed to the origin is accepted.
+def test_path_customer_chain_accepts_downhill():
+    p2c = {58453: {65001}, 65001: {65002}}
+    seq = [58453, 65001, 65002]  # origin 65002 is a customer-of-customer
+    assert path_customer_chain_ok(seq, frozenset({58453}), p2c) is True
+    # A seed that itself originates the prefix trivially qualifies.
+    assert path_customer_chain_ok([700, 58453], frozenset({58453}), p2c) is True
+
+
+# THE BUG: a peer hop between the operator and the origin must break the chain.
+def test_path_customer_chain_rejects_peer_hop():
+    # 58453 (China Mobile Intl) <-> 4826 is a PEER: no edge either direction.
+    # Origin 38803 must NOT be admitted to China Mobile Global via this path.
+    p2c = {2764: {38803}}  # only the far end is a real customer link
+    seq = [134823, 58453, 4826, 2764, 38803]
+    assert path_customer_chain_ok(seq, frozenset({58453}), p2c) is False
+
+
+# Direction matters: if the seed is a CUSTOMER of the next hop (uphill link),
+# the chain must still break -- an edge exists, but the wrong way round.
+# (Confirmed relationship: 58453 is a customer of 4826.)
+def test_path_customer_chain_rejects_upstream_hop():
+    # 4826 is the PROVIDER of 58453 (58453 in p2c[4826]); 2764->38803 is a real
+    # customer link. Walking down from seed 58453 the very first hop 58453->4826
+    # is customer->provider (uphill), so 38803 stays out.
+    p2c = {4826: {58453}, 2764: {38803}}
+    seq = [134823, 58453, 4826, 2764, 38803]
+    assert path_customer_chain_ok(seq, frozenset({58453}), p2c) is False
+
+
+def _flush_one(path, prefix, groups, cn, p2c):
+    """Helper: run flush_route for a single route and return the group buffers."""
+    _init_gate_globals(p2c, cn)
+    gates = build_group_gates(groups, set(cn), p2c)
+    buffers = {k: {"v4": set(), "v6": set()} for k in groups}
+    ver = 6 if ":" in prefix else 4
+    rec = RouteRecord(prefix, ver, normalize_as_path(path))
+    flush_route(rec, groups, buffers, Stats(), group_gates=gates)
+    return buffers
+
+
+_MOBILE_GLOBAL = {"mobile_global": {"name": "CM Global", "asns": [58453],
+                                    "gate": "customer_cone"}}
+
+
+# End-to-end: the peer-reached prefix is kept OUT of the Global table...
+def test_cone_gate_excludes_peer_reached_prefix():
+    p2c = {2764: {38803}}  # 58453<->4826 peer (absent); 38803 is 2764's customer
+    buffers = _flush_one([134823, 58453, 4826, 2764, 38803],
+                         "1.0.4.0/24", _MOBILE_GLOBAL, cn=set(), p2c=p2c)
+    assert "1.0.4.0/24" not in buffers["mobile_global"]["v4"]
+
+
+# ...but a real customer-cone prefix is kept IN.
+def test_cone_gate_includes_real_customer():
+    p2c = {58453: {65001}, 65001: {65002}}
+    buffers = _flush_one([58453, 65001, 65002],
+                         "203.0.114.0/24", _MOBILE_GLOBAL, cn=set(), p2c=p2c)
+    assert "203.0.114.0/24" in buffers["mobile_global"]["v4"]
+
+
+# Rule 2: a CN-registered origin is admitted even when the path chain is broken.
+def test_cone_gate_includes_cn_origin_even_without_chain():
+    # 58453<->4826 not a customer link, but origin 4808 is CN-registered.
+    buffers = _flush_one([58453, 4826, 4808],
+                         "1.2.4.0/24", _MOBILE_GLOBAL, cn={4808}, p2c={})
+    assert "1.2.4.0/24" in buffers["mobile_global"]["v4"]
 
 
 # Extra: normalize handles mrtparse-style segment dicts.
