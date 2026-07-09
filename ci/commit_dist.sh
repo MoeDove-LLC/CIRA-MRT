@@ -20,7 +20,8 @@ branch="${TARGET_BRANCH:-$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo H
 git config user.name  "${GIT_AUTHOR_NAME:-ci-bot}"
 git config user.email "${GIT_AUTHOR_EMAIL:-ci-bot@users.noreply.github.com}"
 
-git add -f "$DIST"
+# -A so that files no longer generated (e.g. after a group rename) are removed.
+git add -A -f "$DIST"
 if git diff --staged --quiet; then
   echo "dist/ unchanged - nothing to commit."
   exit 0

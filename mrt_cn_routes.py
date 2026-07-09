@@ -127,8 +127,8 @@ GROUPS = {
         "asns": [4538, 23911, 7497],
         "gate": "cn_origin",
     },
-    "china_domestic_backbone": {
-        "name": "China Domestic Backbone (China)",
+    "china_domestic_all": {
+        "name": "China Domestic (China)",
         "asns": [4134, 4837, 9929, 9808, 4538, 23911, 7497, 146762],
         "gate": "cn_origin",
     },
@@ -1643,6 +1643,108 @@ def write_group_output(output_dir: Path, group_key: str, group: dict,
     return out_path
 
 
+MAIN_SITE_URL = "https://cira.moedove.com/"
+
+
+def write_index_html(output_dir: Path, generated: str, groups_meta: list) -> Path:
+    """Write a clean, minimal browsable index for Cloudflare/Gitee Pages."""
+    def esc(s: str) -> str:
+        return (str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
+
+    def rows(tier: str) -> str:
+        out = []
+        for g in groups_meta:
+            if g["tier"] != tier:
+                continue
+            out.append(
+                '<tr>'
+                f'<td class="name">{esc(g["name"])}</td>'
+                f'<td class="file"><a href="./{g["v4_file"]}">{g["v4_file"]}</a>'
+                f'<span class="n">{g["count_v4"]:,}</span></td>'
+                f'<td class="file"><a href="./{g["v6_file"]}">{g["v6_file"]}</a>'
+                f'<span class="n">{g["count_v6"]:,}</span></td>'
+                '</tr>'
+            )
+        return "\n".join(out)
+
+    html = f"""<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>China ASN CIDR Lists</title>
+<style>
+  :root {{ --bg:#fff; --fg:#1a1a1a; --muted:#6b7280; --line:#e5e7eb;
+           --accent:#2563eb; --chip:#eef2ff; --chipfg:#3730a3; --card:#fafafa; }}
+  @media (prefers-color-scheme: dark) {{
+    :root {{ --bg:#0f1115; --fg:#e5e7eb; --muted:#9aa3b2; --line:#232833;
+             --accent:#7aa2ff; --chip:#1e2537; --chipfg:#b7c3ff; --card:#151922; }}
+  }}
+  * {{ box-sizing:border-box; }}
+  body {{ margin:0; font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,
+          "PingFang SC","Microsoft YaHei",sans-serif; background:var(--bg); color:var(--fg); }}
+  .wrap {{ max-width:56rem; margin:0 auto; padding:2rem 1.1rem 4rem; }}
+  header {{ display:flex; flex-wrap:wrap; align-items:baseline; justify-content:space-between; gap:.5rem; }}
+  h1 {{ font-size:1.5rem; margin:.2rem 0; letter-spacing:.2px; }}
+  .home {{ font-size:.92rem; text-decoration:none; color:var(--accent); white-space:nowrap; }}
+  .home:hover {{ text-decoration:underline; }}
+  .sub {{ color:var(--muted); margin:.2rem 0 1.4rem; font-size:.94rem; }}
+  h2 {{ font-size:1rem; margin:1.8rem 0 .5rem; display:flex; align-items:center; gap:.5rem; }}
+  .chip {{ background:var(--chip); color:var(--chipfg); font-size:.72rem; font-weight:600;
+           padding:.12rem .5rem; border-radius:999px; letter-spacing:.3px; }}
+  table {{ width:100%; border-collapse:collapse; background:var(--card);
+           border:1px solid var(--line); border-radius:10px; overflow:hidden; }}
+  th,td {{ text-align:left; padding:.55rem .8rem; border-bottom:1px solid var(--line); vertical-align:middle; }}
+  thead th {{ font-size:.76rem; text-transform:uppercase; letter-spacing:.5px; color:var(--muted); font-weight:600; }}
+  tr:last-child td {{ border-bottom:none; }}
+  td.name {{ font-weight:600; }}
+  td.file a {{ color:var(--accent); text-decoration:none; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:.86rem; }}
+  td.file a:hover {{ text-decoration:underline; }}
+  .n {{ color:var(--muted); font-size:.8rem; margin-left:.5rem; }}
+  footer {{ color:var(--muted); font-size:.85rem; margin-top:2rem; border-top:1px solid var(--line); padding-top:1rem; }}
+  footer a {{ color:var(--accent); }}
+  code {{ background:var(--chip); padding:.05em .35em; border-radius:4px; font-size:.85em; }}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>China ASN CIDR Lists</h1>
+    <a class="home" href="{MAIN_SITE_URL}">← 返回主站 cira.moedove.com</a>
+  </header>
+  <p class="sub">由公共 MRT route collector（RouteViews / RIPE RIS / PCH）自動彙整的
+  中國各大運營商 IPv4 / IPv6 CIDR 聚合清單，純文字、每行一條。</p>
+
+  <h2>China <span class="chip">境內 · CN origin</span></h2>
+  <table>
+    <thead><tr><th>Group</th><th>IPv4</th><th>IPv6</th></tr></thead>
+    <tbody>
+{rows("china")}
+    </tbody>
+  </table>
+
+  <h2>Global <span class="chip">含國際客戶 · customer cone</span></h2>
+  <table>
+    <thead><tr><th>Group</th><th>IPv4</th><th>IPv6</th></tr></thead>
+    <tbody>
+{rows("global")}
+    </tbody>
+  </table>
+
+  <footer>
+    Generated: {esc(generated)} · <a href="./summary.json">summary.json</a><br>
+    數字為聚合後的 CIDR 條數。境內表要求 origin AS 註冊在中國；含國際客戶表以運營商
+    的 CAIDA 客戶錐判定。
+  </footer>
+</div>
+</body>
+</html>
+"""
+    out_path = output_dir / "index.html"
+    out_path.write_text(html, encoding="utf-8")
+    return out_path
+
+
 # ---------------------------------------------------------------------------
 # IX. Orchestration
 # ---------------------------------------------------------------------------
@@ -1651,12 +1753,44 @@ def write_group_output(output_dir: Path, group_key: str, group: dict,
 # Origin-country gate data (RIR delegated statistics)
 # ---------------------------------------------------------------------------
 
-# APNIC covers the China region and holds the vast majority of CN ASNs. Add
-# other RIR "delegated-extended" URLs via --rir-stats-url if you need ASNs that
-# a Chinese org registered elsewhere (ARIN/RIPE/…).
+# All five RIRs' "delegated-extended" stats. APNIC holds most CN ASNs, but a
+# Chinese org's ASN can be registered at another RIR with cc=CN, so we union all
+# of them (the parser keeps only the requested country codes).
 DEFAULT_RIR_STATS_URLS = [
     "https://ftp.apnic.net/stats/apnic/delegated-apnic-extended-latest",
+    "https://ftp.ripe.net/pub/stats/ripencc/delegated-ripencc-extended-latest",
+    "https://ftp.arin.net/pub/stats/arin/delegated-arin-extended-latest",
+    "https://ftp.lacnic.net/pub/stats/lacnic/delegated-lacnic-extended-latest",
+    "https://ftp.afrinic.net/pub/stats/afrinic/delegated-afrinic-extended-latest",
 ]
+
+
+class GateDataError(RuntimeError):
+    """Raised when required origin-gate data cannot be obtained (fail loud)."""
+
+
+def _http_get(session, url: str, timeout: int, retries: int = 3, want_bytes: bool = False):
+    """GET with retries on network/5xx errors; 4xx raises immediately (no retry).
+
+    Raises requests.RequestException on final failure.
+    """
+    last_exc = None
+    for attempt in range(1, retries + 1):
+        try:
+            r = session.get(url, timeout=timeout)
+        except requests.RequestException as exc:  # network error -> retry
+            last_exc = exc
+            if attempt < retries:
+                _sleep(2 ** attempt)
+            continue
+        if r.status_code < 400:
+            return r.content if want_bytes else r.text
+        if 400 <= r.status_code < 500:  # client error (e.g. 404) -> do not retry
+            raise requests.HTTPError(f"HTTP {r.status_code} for {url}")
+        last_exc = requests.HTTPError(f"HTTP {r.status_code} for {url}")  # 5xx -> retry
+        if attempt < retries:
+            _sleep(2 ** attempt)
+    raise last_exc if last_exc else requests.RequestException(f"failed: {url}")
 
 
 def parse_rir_asns(text: str, country_codes: set) -> set[int]:
@@ -1685,37 +1819,26 @@ def parse_rir_asns(text: str, country_codes: set) -> set[int]:
     return result
 
 
-def load_origin_gate_asns(downloader: "Downloader", urls: list, country_codes: set,
-                          cache_dir: Path, stats: Stats) -> set[int]:
-    """Fetch RIR delegated stats and return the set of ASNs for country_codes.
-
-    Cached per file; on fetch failure the cached copy is used if present. Returns
-    an empty set only if nothing could be obtained (caller then disables the gate
-    rather than dropping everything).
+def load_origin_gate_asns(downloader: "Downloader", urls: list, country_codes: set) -> tuple:
+    """Fetch RIR delegated stats from all URLs and union the ASNs for the given
+    country codes. Returns (asns, errors) where errors is a list of
+    (url, reason) for any source that could not be fetched. Fetch failures are
+    surfaced (not silently swallowed) so the caller can fail loud.
     """
     asns: set[int] = set()
-    cache_root = cache_dir / "rir"
-    cache_root.mkdir(parents=True, exist_ok=True)
+    errors: list = []
     for url in urls:
-        fname = url.rsplit("/", 1)[-1] or "rir-stats"
-        cache_file = cache_root / fname
-        text = None
         try:
-            r = downloader.session.get(url, timeout=downloader.timeout)
-            if r.status_code < 400 and r.text:
-                text = r.text
-                cache_file.write_text(text, encoding="utf-8")
+            text = _http_get(downloader.session, url, downloader.timeout, want_bytes=False)
         except requests.RequestException as exc:
-            stats.warn(f"[origin-gate] fetch failed {url}: {exc}")
-        if text is None and cache_file.exists():
-            stats.warn(f"[origin-gate] using cached {cache_file}")
-            text = cache_file.read_text(encoding="utf-8")
-        if text:
-            found = parse_rir_asns(text, country_codes)
-            LOG.info("[origin-gate] %s: %d ASN(s) for %s", url, len(found),
-                     ",".join(sorted(country_codes)))
-            asns |= found
-    return asns
+            LOG.error("[origin-gate] FETCH FAILED: %s -> %s", url, exc)
+            errors.append((url, str(exc)))
+            continue
+        found = parse_rir_asns(text, country_codes)
+        LOG.info("[origin-gate] %s: %d ASN(s) for cc=%s", url, len(found),
+                 ",".join(sorted(country_codes)))
+        asns |= found
+    return asns, errors
 
 
 # ---------------------------------------------------------------------------
@@ -1769,46 +1892,38 @@ def customer_cone(seed_asns: Iterable[int], p2c: dict) -> set[int]:
 
 
 def load_provider_customer_map(downloader: "Downloader", url_templates: list,
-                               target_time: datetime, cache_dir: Path, stats: Stats,
-                               lookback_months: int = 4) -> dict:
+                               target_time: datetime, lookback_months: int = 6) -> tuple:
     """Fetch the most recent available CAIDA as-rel file and build a p2c map.
 
-    Tries the target month then walks back up to ``lookback_months``. Caches the
-    raw file; on fetch failure falls back to a cached copy. Returns {} if nothing
-    is available (caller then disables the customer-cone gate).
+    Tries the target month then walks back up to ``lookback_months`` (a 404 just
+    means that month isn't published yet). Returns (p2c, error) where error is
+    None on success or a short string describing why nothing could be obtained.
     """
-    cache_root = cache_dir / "caida"
-    cache_root.mkdir(parents=True, exist_ok=True)
     base = target_time.year * 12 + (target_time.month - 1)
+    last_err = None
     for delta in range(lookback_months + 1):
         idx = base - delta
         ym = f"{idx // 12:04d}{idx % 12 + 1:02d}"
         for tmpl in url_templates:
             url = tmpl.replace("{YYYYMM}", ym)
-            fname = url.rsplit("/", 1)[-1] or "as-rel"
-            cache_file = cache_root / fname
-            data = None
             try:
-                r = downloader.session.get(url, timeout=downloader.timeout)
-                if r.status_code < 400 and r.content:
-                    data = r.content
-                    cache_file.write_bytes(data)
+                data = _http_get(downloader.session, url, downloader.timeout, want_bytes=True)
             except requests.RequestException as exc:
-                stats.warn(f"[cone] fetch failed {url}: {exc}")
-            if data is None and cache_file.exists():
-                stats.warn(f"[cone] using cached {cache_file}")
-                data = cache_file.read_bytes()
-            if data:
-                try:
-                    text = (bz2.decompress(data) if fname.endswith(".bz2") else data).decode("utf-8", "replace")
-                except Exception as exc:
-                    stats.warn(f"[cone] could not decode {url}: {exc}")
-                    continue
-                p2c = build_provider_customer_map(text)
-                LOG.info("[cone] CAIDA %s: %d providers with customers", url, len(p2c))
-                return p2c
-    stats.warn("[cone] no CAIDA as-rel data available; customer-cone gate disabled")
-    return {}
+                last_err = f"{url}: {exc}"
+                # 404 = month not published yet -> try older; log other errors.
+                if "HTTP 404" not in str(exc):
+                    LOG.error("[cone] FETCH FAILED: %s -> %s", url, exc)
+                continue
+            try:
+                text = (bz2.decompress(data) if url.endswith(".bz2") else data).decode("utf-8", "replace")
+            except Exception as exc:
+                last_err = f"{url}: decode error {exc}"
+                LOG.error("[cone] decode failed: %s", last_err)
+                continue
+            p2c = build_provider_customer_map(text)
+            LOG.info("[cone] CAIDA %s: %d providers with customers", url, len(p2c))
+            return p2c, None
+    return {}, (last_err or "no CAIDA as-rel file found in the lookback window")
 
 
 def build_group_gates(groups: dict, cn_origin_asns: Optional[set],
@@ -1976,20 +2091,34 @@ def run(args) -> int:
     if not args.no_origin_gate and any(g.get("gate") == "cn_origin" for g in GROUPS.values()):
         ccs = {c.strip().upper() for c in args.gate_origin_country.split(",") if c.strip()}
         rir_urls = [u.strip() for u in args.rir_stats_url.split(",") if u.strip()]
-        cn_set = load_origin_gate_asns(downloader, rir_urls, ccs, cache_dir, stats)
-        if cn_set:
-            cn_origin_asns = cn_set | set(ASN_MAP.keys())
-            LOG.info("cn-origin gate: %d allowed origin ASN(s) (cc=%s + operator ASNs)",
-                     len(cn_origin_asns), ",".join(sorted(ccs)))
-        else:
-            stats.warn("cn-origin gate requested but no ASN data available; disabled")
+        cn_set, errors = load_origin_gate_asns(downloader, rir_urls, ccs)
+        if errors and not args.allow_partial_gate_data:
+            detail = "; ".join(f"{u} ({e})" for u, e in errors)
+            raise GateDataError(
+                f"{len(errors)}/{len(rir_urls)} RIR source(s) failed to fetch: {detail}. "
+                "Aborting so the CN-origin set is not silently incomplete. "
+                "Re-run, or pass --allow-partial-gate-data to proceed with what loaded, "
+                "or --no-origin-gate to disable the gate."
+            )
+        if not cn_set:
+            raise GateDataError(
+                "cn-origin gate is enabled but NO CN ASN data could be obtained from any "
+                "RIR. Aborting instead of producing path-only (polluted) China tables."
+            )
+        cn_origin_asns = cn_set | set(ASN_MAP.keys())
+        LOG.info("cn-origin gate: %d allowed origin ASN(s) (cc=%s, %d RIR source(s) OK, %d failed)",
+                 len(cn_origin_asns), ",".join(sorted(ccs)), len(rir_urls) - len(errors), len(errors))
 
     p2c: Optional[dict] = None
     if not args.no_cone_gate and any(g.get("gate") == "customer_cone" for g in GROUPS.values()):
         caida_urls = [u.strip() for u in args.caida_asrel_url.split(",") if u.strip()]
-        p2c = load_provider_customer_map(downloader, caida_urls, target_time, cache_dir, stats)
+        p2c, cone_err = load_provider_customer_map(downloader, caida_urls, target_time)
         if not p2c:
-            stats.warn("customer-cone gate requested but no CAIDA data; disabled")
+            raise GateDataError(
+                f"customer-cone gate is enabled but CAIDA AS-relationship data could not be "
+                f"obtained ({cone_err}). Aborting instead of producing path-only (polluted) "
+                "Global tables. Pass --no-cone-gate to disable the customer-cone gate."
+            )
 
     group_gates = build_group_gates(GROUPS, cn_origin_asns, p2c)
     if group_gates:
@@ -2130,10 +2259,27 @@ def run(args) -> int:
         per_group_v6[key] = len(v6)
         LOG.info("group %s: %d v4 / %d v6 aggregated prefixes", key, len(v4), len(v6))
 
+    # Unified group metadata: the SAME key drives the code, the filename and the
+    # json entry, so all three names stay in sync.
+    groups_meta = []
+    for key, group in GROUPS.items():
+        tier = "global" if group.get("gate") == "customer_cone" else "china"
+        groups_meta.append({
+            "key": key,
+            "name": group["name"],
+            "tier": tier,
+            "gate": group.get("gate", "none"),
+            "v4_file": f"{key}_v4.txt",
+            "v6_file": f"{key}_v6.txt",
+            "count_v4": per_group_v4[key],
+            "count_v6": per_group_v6[key],
+        })
+
     # --- summary --------------------------------------------------------
     summary = {
         "generated_at": generated,
         "enabled_sources": [p.name for p in providers],
+        "groups": groups_meta,
         "processed_files": stats.processed_files,
         "skipped_files": stats.skipped_files,
         "warnings": stats.warnings,
@@ -2148,6 +2294,8 @@ def run(args) -> int:
     }
     summary_path = output_dir / "summary.json"
     summary_path.write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    write_index_html(output_dir, generated, groups_meta)
 
     if not args.keep_cache:
         _cleanup_cache(downloaded)
@@ -2221,6 +2369,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--caida-asrel-url", default=",".join(DEFAULT_CAIDA_ASREL_URLS),
                    help="Comma-separated CAIDA as-rel2 URL templates ({YYYYMM} placeholder) "
                         "used to build operator customer cones.")
+    p.add_argument("--allow-partial-gate-data", action="store_true",
+                   help="Proceed even if some RIR sources fail to fetch (default: abort so "
+                        "the CN-origin set is never silently incomplete).")
     p.add_argument("--min-v4-prefix", type=int, default=MIN_V4_PREFIXLEN,
                    help="Reject IPv4 prefixes shorter than this (default 8; also "
                         "removes 0.0.0.0/0 and other over-broad prefixes).")
@@ -2251,6 +2402,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
     try:
         return run(args)
+    except GateDataError as exc:
+        LOG.error("ABORT (gate data unavailable): %s", exc)
+        return 2
     except KeyboardInterrupt:  # pragma: no cover
         LOG.error("interrupted")
         return 130
