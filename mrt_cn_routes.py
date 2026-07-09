@@ -447,13 +447,88 @@ def is_cn_to_t1_path(
     return False
 
 
-def aggregate_prefixes(prefixes: Iterable[str]) -> list[str]:
-    """Merge a list of CIDR strings into a minimal aggregated list.
+# ---------------------------------------------------------------------------
+# Bogon / reserved / default filtering
+#
+# CRITICAL: a single 0.0.0.0/0 (or ::/0) in the MRT data would make cidr_merge
+# collapse an entire group into one default route. We therefore drop the default
+# route, any prefix that is too short (over-broad), and all bogon / special-use
+# ranges BEFORE aggregation, for both IPv4 and IPv6.
+# ---------------------------------------------------------------------------
 
-    Invalid prefixes are skipped. The result is sorted by network address.
+# Shortest prefix we accept. This alone kills 0.0.0.0/0, ::/0 and other
+# over-broad prefixes that could swallow a whole list during aggregation.
+MIN_V4_PREFIXLEN = 8
+MIN_V6_PREFIXLEN = 10
+
+_BOGON_V4 = [ipaddress.ip_network(x) for x in (
+    "0.0.0.0/8",         # "this network"
+    "10.0.0.0/8",        # RFC1918 private
+    "100.64.0.0/10",     # RFC6598 CGNAT
+    "127.0.0.0/8",       # loopback
+    "169.254.0.0/16",    # link-local
+    "172.16.0.0/12",     # RFC1918 private
+    "192.0.0.0/24",      # IETF protocol assignments
+    "192.0.2.0/24",      # TEST-NET-1
+    "192.88.99.0/24",    # 6to4 relay anycast (deprecated)
+    "192.168.0.0/16",    # RFC1918 private
+    "198.18.0.0/15",     # benchmarking
+    "198.51.100.0/24",   # TEST-NET-2
+    "203.0.113.0/24",    # TEST-NET-3
+    "224.0.0.0/4",       # multicast
+    "240.0.0.0/4",       # reserved / future use (incl. 255.255.255.255)
+)]
+
+# For IPv6 we whitelist global unicast (2000::/3) and then blacklist a few
+# special-use blocks that fall inside it. Anything outside 2000::/3 (unspecified,
+# loopback, ULA fc00::/7, link-local fe80::/10, multicast ff00::/8, ...) is
+# rejected automatically.
+_V6_GLOBAL_UNICAST = ipaddress.ip_network("2000::/3")
+_BOGON_V6 = [ipaddress.ip_network(x) for x in (
+    "2001:db8::/32",     # documentation
+    "2001:10::/28",      # ORCHID (deprecated)
+    "2001:20::/28",      # ORCHIDv2
+    "2002::/16",         # 6to4
+    "3ffe::/16",         # 6bone (decommissioned)
+)]
+
+
+def is_public_prefix(cidr: str, min_v4: int = MIN_V4_PREFIXLEN,
+                     min_v6: int = MIN_V6_PREFIXLEN) -> bool:
+    """True if ``cidr`` is a plausibly-routable public prefix.
+
+    Rejects invalid CIDRs, the default route, over-broad prefixes (shorter than
+    the minimum length), and bogon / reserved / special-use ranges. Covers both
+    IPv4 and IPv6.
+    """
+    try:
+        net = ipaddress.ip_network(cidr, strict=False)
+    except ValueError:
+        return False
+    if net.version == 4:
+        if net.prefixlen < min_v4:
+            return False
+        return not any(net.overlaps(b) for b in _BOGON_V4)
+    # IPv6
+    if net.prefixlen < min_v6:
+        return False
+    if not net.subnet_of(_V6_GLOBAL_UNICAST):
+        return False
+    return not any(net.overlaps(b) for b in _BOGON_V6)
+
+
+def aggregate_prefixes(prefixes: Iterable[str], min_v4: int = MIN_V4_PREFIXLEN,
+                       min_v6: int = MIN_V6_PREFIXLEN) -> list[str]:
+    """Filter out bogon/default/over-broad prefixes, then merge into a minimal
+    aggregated CIDR list. Invalid prefixes are skipped; result sorted by address.
+
+    The bogon/default filter runs BEFORE cidr_merge so a stray 0.0.0.0/0 (or
+    ::/0) can never collapse the whole list into a default route.
     """
     networks = []
     for p in prefixes:
+        if not is_public_prefix(p, min_v4=min_v4, min_v6=min_v6):
+            continue
         try:
             networks.append(IPNetwork(p))
         except Exception:
@@ -1685,8 +1760,8 @@ def run(args) -> int:
     per_group_v4: dict[str, int] = {}
     per_group_v6: dict[str, int] = {}
     for key, group in GROUPS.items():
-        v4 = aggregate_prefixes(group_buffers[key]["v4"])
-        v6 = aggregate_prefixes(group_buffers[key]["v6"])
+        v4 = aggregate_prefixes(group_buffers[key]["v4"], min_v4=args.min_v4_prefix, min_v6=args.min_v6_prefix)
+        v6 = aggregate_prefixes(group_buffers[key]["v6"], min_v4=args.min_v4_prefix, min_v6=args.min_v6_prefix)
         write_group_output(output_dir, key, group, v4, 4, generated)
         write_group_output(output_dir, key, group, v6, 6, generated)
         per_group_v4[key] = len(v4)
@@ -1767,6 +1842,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--timeout", type=int, default=120,
                    help="Per-request timeout in seconds (PCH can be slow to start; "
                         "raise this if PCH HEAD/GET times out).")
+    p.add_argument("--min-v4-prefix", type=int, default=MIN_V4_PREFIXLEN,
+                   help="Reject IPv4 prefixes shorter than this (default 8; also "
+                        "removes 0.0.0.0/0 and other over-broad prefixes).")
+    p.add_argument("--min-v6-prefix", type=int, default=MIN_V6_PREFIXLEN,
+                   help="Reject IPv6 prefixes shorter than this (default 10; also "
+                        "removes ::/0 and other over-broad prefixes).")
     p.add_argument("--parser", choices=["auto", "native", "bgpdump", "mrtparse"], default="auto",
                    help="MRT parser: 'auto' uses bgpdump if available else the built-in "
                         "native struct parser; 'native' forces the dependency-free fast "

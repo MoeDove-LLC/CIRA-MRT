@@ -11,6 +11,7 @@ from mrt_cn_routes import (  # noqa: E402
     aggregate_prefixes,
     as_path_all_asns,
     is_cn_to_t1_path,
+    is_public_prefix,
     normalize_as_path,
     path_contains_any_target,
 )
@@ -62,32 +63,82 @@ def test_as_set_membership_but_not_adjacency():
 
 
 # 5. cidr_merge collapses contiguous / aggregatable networks.
+#    (Uses real public ranges; documentation/private ranges are now filtered.)
 def test_aggregate_prefixes_merges():
-    merged = aggregate_prefixes(["192.0.2.0/25", "192.0.2.128/25"])
-    assert merged == ["192.0.2.0/24"]
+    merged = aggregate_prefixes(["1.0.0.0/25", "1.0.0.128/25"])
+    assert merged == ["1.0.0.0/24"]
 
-    merged2 = aggregate_prefixes(["10.0.0.0/24", "10.0.1.0/24", "10.0.2.0/24"])
-    # 10.0.0.0/24 + 10.0.1.0/24 aggregate to /23; 10.0.2.0/24 stays separate.
-    assert "10.0.0.0/23" in merged2
-    assert "10.0.2.0/24" in merged2
+    merged2 = aggregate_prefixes(["116.0.0.0/24", "116.0.1.0/24", "116.0.2.0/24"])
+    # 116.0.0.0/24 + 116.0.1.0/24 aggregate to /23; 116.0.2.0/24 stays separate.
+    assert "116.0.0.0/23" in merged2
+    assert "116.0.2.0/24" in merged2
 
 
 # 6. IPv4 and IPv6 aggregation stay separate.
 def test_v4_v6_separation():
-    v4 = aggregate_prefixes(["203.0.113.0/24"])
-    v6 = aggregate_prefixes(["2001:db8::/33", "2001:db8:8000::/33"])
-    assert v4 == ["203.0.113.0/24"]
-    assert v6 == ["2001:db8::/32"]
+    v4 = aggregate_prefixes(["1.2.3.0/24"])
+    v6 = aggregate_prefixes(["2408:8000::/33", "2408:8000:8000::/33"])
+    assert v4 == ["1.2.3.0/24"]
+    assert v6 == ["2408:8000::/32"]
     # Mixed input still merges within family only.
-    mixed = aggregate_prefixes(["203.0.113.0/24", "2001:db8::/32"])
-    assert "203.0.113.0/24" in mixed
-    assert "2001:db8::/32" in mixed
+    mixed = aggregate_prefixes(["1.2.3.0/24", "2408:8000::/32"])
+    assert "1.2.3.0/24" in mixed
+    assert "2408:8000::/32" in mixed
 
 
 # Extra: invalid prefixes are skipped, not fatal.
 def test_aggregate_skips_invalid():
-    merged = aggregate_prefixes(["not-a-prefix", "198.51.100.0/24", ""])
-    assert merged == ["198.51.100.0/24"]
+    merged = aggregate_prefixes(["not-a-prefix", "1.2.3.0/24", ""])
+    assert merged == ["1.2.3.0/24"]
+
+
+# 7. CRITICAL: a default route must never collapse the whole list.
+def test_default_route_does_not_swallow_list():
+    # Without filtering, cidr_merge([0.0.0.0/0, ...]) would return ['0.0.0.0/0'].
+    merged = aggregate_prefixes(["0.0.0.0/0", "1.2.3.0/24", "8.8.8.0/24"])
+    assert "0.0.0.0/0" not in merged
+    assert set(merged) == {"1.2.3.0/24", "8.8.8.0/24"}
+
+    v6 = aggregate_prefixes(["::/0", "2408:8000::/20", "2400:3200::/32"])
+    assert "::/0" not in v6
+    assert "2408:8000::/20" in v6
+
+
+# 8. Bogon / reserved / special-use ranges are dropped (IPv4 and IPv6).
+def test_bogons_are_filtered():
+    v4_bogons = [
+        "0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8",
+        "169.254.0.0/16", "172.16.0.0/12", "192.168.1.0/24",
+        "192.0.2.0/24", "198.18.0.0/15", "203.0.113.0/24",
+        "224.0.0.0/4", "240.0.0.0/4", "255.255.255.255/32",
+    ]
+    for b in v4_bogons:
+        assert is_public_prefix(b) is False, b
+    # Over-broad IPv4 (shorter than /8) is rejected too.
+    assert is_public_prefix("0.0.0.0/1") is False
+    assert is_public_prefix("128.0.0.0/2") is False
+    # Legit public IPv4 kept.
+    assert is_public_prefix("1.2.3.0/24") is True
+    assert is_public_prefix("116.128.0.0/10") is True  # China Telecom-ish
+
+    v6_bogons = [
+        "::/0", "::1/128", "fe80::/10", "fc00::/7", "ff00::/8",
+        "2001:db8::/32", "2002::/16", "3ffe::/16", "64:ff9b::/96",
+    ]
+    for b in v6_bogons:
+        assert is_public_prefix(b) is False, b
+    # Legit global-unicast IPv6 kept (China Unicom / China Mobile ranges).
+    assert is_public_prefix("2408:8000::/20") is True
+    assert is_public_prefix("2409:8000::/20") is True
+
+
+# 9. Aggregation still merges legit prefixes after filtering.
+def test_aggregate_after_filtering_still_merges():
+    merged = aggregate_prefixes(["10.0.0.0/8", "192.0.2.0/25", "192.0.2.128/25",
+                                 "203.0.113.0/24", "1.1.0.0/24", "1.1.1.0/24"])
+    # bogons (10/8, 192.0.2.x TEST-NET, 203.0.113 TEST-NET) dropped;
+    # 1.1.0.0/24 + 1.1.1.0/24 aggregate to 1.1.0.0/23.
+    assert merged == ["1.1.0.0/23"]
 
 
 # Extra: normalize handles mrtparse-style segment dicts.
