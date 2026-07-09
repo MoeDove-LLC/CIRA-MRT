@@ -97,42 +97,61 @@ T1_ASNS = {
     3491, 5511, 6453, 6461, 6762, 7018,
 }
 
+# Two tiers, distinguished by name and origin gate:
+#   "China"  tables (gate = cn_origin)     -> mainland only: ORIGIN AS must be
+#            China-registered. No international customers.
+#   "Global" tables (gate = customer_cone) -> operator + international customers:
+#            ORIGIN AS in the operator's CAIDA customer cone (peers/upstreams it
+#            merely transits are excluded), unioned with CN origins for
+#            completeness.
+# Keys ending in _global are the Global tier; the rest are the China tier.
 GROUPS = {
-    "china_all": {
-        "name": "China All (Domestic + Global + Edu)",
-        "asns": list(ASN_MAP.keys()),
-    },
-    "china_domestic_backbone": {
-        "name": "China Domestic Backbone (No Global)",
-        "asns": [4134, 4837, 9929, 9808, 4538, 23911, 7497, 146762],
-    },
+    # --- China tier (mainland, CN origin) --------------------------------
     "chinatelecom": {
-        "name": "China Telecom",
+        "name": "China Telecom (China)",
         "asns": [4134],
-    },
-    "chinatelecom_global": {
-        "name": "China Telecom (Incl. Global)",
-        "asns": [4134, 4809, 23764],
+        "gate": "cn_origin",
     },
     "chinaunicom": {
-        "name": "China Unicom",
+        "name": "China Unicom (China)",
         "asns": [4837, 9929],
-    },
-    "chinaunicom_global": {
-        "name": "China Unicom (Incl. Global)",
-        "asns": [4837, 9929, 10099],
+        "gate": "cn_origin",
     },
     "chinamobile": {
-        "name": "China Mobile",
+        "name": "China Mobile (China)",
         "asns": [9808],
-    },
-    "chinamobile_global": {
-        "name": "China Mobile (Incl. Global)",
-        "asns": [9808, 58453, 58807, 268862, 137872, 209141, 9231, 135054, 328787, 132389, 139619, 141419],
+        "gate": "cn_origin",
     },
     "cernet_edu": {
         "name": "Education & Research Network",
         "asns": [4538, 23911, 7497],
+        "gate": "cn_origin",
+    },
+    "china_domestic_backbone": {
+        "name": "China Domestic ",
+        "asns": [4134, 4837, 9929, 9808, 4538, 23911, 7497, 146762],
+        "gate": "cn_origin",
+    },
+    # --- Global tier (incl. international customers, customer cone) -------
+    "chinatelecom_global": {
+        "name": "China Telecom (Global)",
+        "asns": [4134, 4809, 23764],
+        "gate": "customer_cone",
+    },
+    "chinaunicom_global": {
+        "name": "China Unicom (Global)",
+        "asns": [4837, 9929, 10099],
+        "gate": "customer_cone",
+    },
+    "chinamobile_global": {
+        "name": "China Mobile (Global)",
+        "asns": [9808, 58453, 58807, 268862, 137872, 209141, 9231, 135054, 328787, 132389, 139619, 141419],
+        "gate": "customer_cone",
+    },
+    "china_all_global": {
+        "name": "China All (Global)",
+        "asns": list(ASN_MAP.keys()),
+        "gate": "customer_cone",
     },
 }
 
@@ -195,6 +214,7 @@ class Stats:
     total_raw_routes_seen: int = 0
     total_matched_routes: int = 0
     total_filtered_cn_to_t1: int = 0
+    total_filtered_foreign_origin: int = 0
     parse_errors: int = 0
     invalid_prefixes: int = 0
 
@@ -515,6 +535,24 @@ def is_public_prefix(cidr: str, min_v4: int = MIN_V4_PREFIXLEN,
     if not net.subnet_of(_V6_GLOBAL_UNICAST):
         return False
     return not any(net.overlaps(b) for b in _BOGON_V6)
+
+
+def route_origin_asns(as_path) -> set[int]:
+    """Return the origin ASN(s) of a route: the last AS in the AS_PATH.
+
+    The origin is the rightmost/last non-confederation segment. For a normal
+    path that is a single ASN (the last AS_SEQUENCE element). If the path is
+    aggregated and ends in an AS_SET, every member of that set is a candidate
+    origin. Used by the origin-country gate to tell "prefix belongs to this
+    network" apart from "this network merely transits the prefix".
+    """
+    for seg in reversed(normalize_as_path(as_path)):
+        if seg.kind == "SEQ":
+            return {seg.asns[-1]} if seg.asns else set()
+        if seg.kind == "SET":
+            return set(seg.asns)
+        # CONFED_* segments are ignored when locating the origin.
+    return set()
 
 
 def aggregate_prefixes(prefixes: Iterable[str], min_v4: int = MIN_V4_PREFIXLEN,
@@ -1002,14 +1040,23 @@ def flush_route(
     stats: Stats,
     cn_asns: Iterable[int] = CN_PATH_FILTER_ASNS,
     t1_asns: Iterable[int] = T1_ASNS,
+    group_gates: Optional[dict] = None,
 ) -> None:
-    """Apply matching + CN->T1 filtering for a single route and buffer prefixes.
+    """Apply matching + filtering for a single route and buffer prefixes.
 
     * Increments ``total_raw_routes_seen``.
     * Validates the prefix; invalid ones are counted and skipped.
-    * Computes the CN->T1 verdict once (it is route-level, not group-level).
-    * For every group whose target ASNs appear in the AS_PATH, the prefix is
-      appended to that group's v4/v6 buffer unless the route was CN->T1 filtered.
+    * Matches groups by AS_PATH membership (a route is grouped under an operator
+      if that operator's ASN appears anywhere in the path -- this keeps prefixes
+      originated by the operator's provincial/child ASNs that only transit the
+      backbone).
+    * Computes the CN->T1 verdict once (route-level).
+    * PER-GROUP ORIGIN GATE (if ``group_gates`` given): a matched group only
+      receives the prefix if the route's ORIGIN AS is in that group's allowed
+      set. This is how one run produces both a mainland-only table (allowed =
+      CN-origin ASNs) and an incl.-international table (allowed = the operator's
+      customer cone) -- and how a peer-transited foreign prefix (e.g. AS3462
+      via China Telecom) is kept out of both.
     """
     stats.total_raw_routes_seen += 1
 
@@ -1039,11 +1086,23 @@ def flush_route(
         stats.total_filtered_cn_to_t1 += 1
         return
 
-    stats.total_matched_routes += 1
+    origins = route_origin_asns(record.as_path) if group_gates else None
     version_key = "v4" if record.ip_version == 4 else "v6"
+    added_any = False
     for key in matched_groups:
+        gate = group_gates.get(key) if group_gates else None
+        if gate is not None and origins is not None and origins.isdisjoint(gate):
+            continue  # origin not allowed for this particular table
         # Buffers are sets: a prefix seen via many peers is stored once.
         group_buffers[key][version_key].add(record.prefix)
+        added_any = True
+
+    if added_any:
+        stats.total_matched_routes += 1
+    else:
+        # Matched by membership but gated out of every table (e.g. foreign
+        # origin / outside the customer cone).
+        stats.total_filtered_foreign_origin += 1
 
 
 # ---------------------------------------------------------------------------
@@ -1536,6 +1595,201 @@ def write_group_output(output_dir: Path, group_key: str, group: dict,
 # IX. Orchestration
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Origin-country gate data (RIR delegated statistics)
+# ---------------------------------------------------------------------------
+
+# APNIC covers the China region and holds the vast majority of CN ASNs. Add
+# other RIR "delegated-extended" URLs via --rir-stats-url if you need ASNs that
+# a Chinese org registered elsewhere (ARIN/RIPE/…).
+DEFAULT_RIR_STATS_URLS = [
+    "https://ftp.apnic.net/stats/apnic/delegated-apnic-extended-latest",
+]
+
+
+def parse_rir_asns(text: str, country_codes: set) -> set[int]:
+    """Parse ASN entries for the given country codes from an RIR delegated file.
+
+    Line format: ``registry|cc|type|start|value|date|status|...``; for
+    ``type == asn`` the ASN block is ``start .. start+value-1``.
+    """
+    result: set[int] = set()
+    for line in text.splitlines():
+        if not line or line[0] == "#":
+            continue
+        parts = line.split("|")
+        if len(parts) < 5 or parts[2] != "asn":
+            continue
+        if parts[1] not in country_codes:
+            continue
+        try:
+            start = int(parts[3])
+            count = int(parts[4])
+        except ValueError:
+            continue
+        # Guard against absurd ranges from malformed summary lines.
+        if 0 < count <= 100000:
+            result.update(range(start, start + count))
+    return result
+
+
+def load_origin_gate_asns(downloader: "Downloader", urls: list, country_codes: set,
+                          cache_dir: Path, stats: Stats) -> set[int]:
+    """Fetch RIR delegated stats and return the set of ASNs for country_codes.
+
+    Cached per file; on fetch failure the cached copy is used if present. Returns
+    an empty set only if nothing could be obtained (caller then disables the gate
+    rather than dropping everything).
+    """
+    asns: set[int] = set()
+    cache_root = cache_dir / "rir"
+    cache_root.mkdir(parents=True, exist_ok=True)
+    for url in urls:
+        fname = url.rsplit("/", 1)[-1] or "rir-stats"
+        cache_file = cache_root / fname
+        text = None
+        try:
+            r = downloader.session.get(url, timeout=downloader.timeout)
+            if r.status_code < 400 and r.text:
+                text = r.text
+                cache_file.write_text(text, encoding="utf-8")
+        except requests.RequestException as exc:
+            stats.warn(f"[origin-gate] fetch failed {url}: {exc}")
+        if text is None and cache_file.exists():
+            stats.warn(f"[origin-gate] using cached {cache_file}")
+            text = cache_file.read_text(encoding="utf-8")
+        if text:
+            found = parse_rir_asns(text, country_codes)
+            LOG.info("[origin-gate] %s: %d ASN(s) for %s", url, len(found),
+                     ",".join(sorted(country_codes)))
+            asns |= found
+    return asns
+
+
+# ---------------------------------------------------------------------------
+# Customer-cone data (CAIDA AS relationships) for the incl.-international tables
+# ---------------------------------------------------------------------------
+
+# CAIDA serial-2 AS-relationships, monthly. {YYYYMM} is filled in; recent months
+# are tried in turn (the dataset lags by a month or two).
+DEFAULT_CAIDA_ASREL_URLS = [
+    "https://publicdata.caida.org/datasets/as-relationships/serial-2/{YYYYMM}01.as-rel2.txt.bz2",
+]
+
+
+def build_provider_customer_map(text: str) -> dict:
+    """Parse CAIDA as-rel(2) text into a provider -> {customers} adjacency map.
+
+    Line format: ``AS1|AS2|rel[|source]`` where rel == -1 means AS1 is the
+    provider of AS2 (a provider->customer link) and rel == 0 means peer. Only
+    provider->customer edges are kept; peer edges are intentionally ignored.
+    """
+    p2c: dict = {}
+    for line in text.splitlines():
+        if not line or line[0] == "#":
+            continue
+        parts = line.split("|")
+        if len(parts) < 3:
+            continue
+        try:
+            provider = int(parts[0])
+            customer = int(parts[1])
+            rel = int(parts[2])
+        except ValueError:
+            continue
+        if rel == -1:
+            p2c.setdefault(provider, set()).add(customer)
+    return p2c
+
+
+def customer_cone(seed_asns: Iterable[int], p2c: dict) -> set[int]:
+    """All ASNs in the customer cone of ``seed_asns`` (seeds + transitive
+    customers, following only provider->customer edges)."""
+    seen = set(seed_asns)
+    stack = list(seen)
+    while stack:
+        node = stack.pop()
+        for cust in p2c.get(node, ()):  # noqa: SIM118
+            if cust not in seen:
+                seen.add(cust)
+                stack.append(cust)
+    return seen
+
+
+def load_provider_customer_map(downloader: "Downloader", url_templates: list,
+                               target_time: datetime, cache_dir: Path, stats: Stats,
+                               lookback_months: int = 4) -> dict:
+    """Fetch the most recent available CAIDA as-rel file and build a p2c map.
+
+    Tries the target month then walks back up to ``lookback_months``. Caches the
+    raw file; on fetch failure falls back to a cached copy. Returns {} if nothing
+    is available (caller then disables the customer-cone gate).
+    """
+    cache_root = cache_dir / "caida"
+    cache_root.mkdir(parents=True, exist_ok=True)
+    base = target_time.year * 12 + (target_time.month - 1)
+    for delta in range(lookback_months + 1):
+        idx = base - delta
+        ym = f"{idx // 12:04d}{idx % 12 + 1:02d}"
+        for tmpl in url_templates:
+            url = tmpl.replace("{YYYYMM}", ym)
+            fname = url.rsplit("/", 1)[-1] or "as-rel"
+            cache_file = cache_root / fname
+            data = None
+            try:
+                r = downloader.session.get(url, timeout=downloader.timeout)
+                if r.status_code < 400 and r.content:
+                    data = r.content
+                    cache_file.write_bytes(data)
+            except requests.RequestException as exc:
+                stats.warn(f"[cone] fetch failed {url}: {exc}")
+            if data is None and cache_file.exists():
+                stats.warn(f"[cone] using cached {cache_file}")
+                data = cache_file.read_bytes()
+            if data:
+                try:
+                    text = (bz2.decompress(data) if fname.endswith(".bz2") else data).decode("utf-8", "replace")
+                except Exception as exc:
+                    stats.warn(f"[cone] could not decode {url}: {exc}")
+                    continue
+                p2c = build_provider_customer_map(text)
+                LOG.info("[cone] CAIDA %s: %d providers with customers", url, len(p2c))
+                return p2c
+    stats.warn("[cone] no CAIDA as-rel data available; customer-cone gate disabled")
+    return {}
+
+
+def build_group_gates(groups: dict, cn_origin_asns: Optional[set],
+                      p2c: Optional[dict]) -> Optional[dict]:
+    """Build the per-group allowed-origin sets from each group's gate type.
+
+      * China tier (cn_origin): allowed = CN-registered origins (strict; mainland
+        only, no international customers).
+      * Global tier (customer_cone): allowed = the operator's CAIDA customer cone
+        (operator + real customers, incl. international; peers/upstreams merely
+        transited are excluded) UNION the CN origins (to also catch prefixes
+        CAIDA might have missed).
+
+    Returns None if every group ends up ungated (so gating can be skipped).
+    """
+    cn = cn_origin_asns or set()
+    gates: dict = {}
+    any_gated = False
+    for key, g in groups.items():
+        gate_type = g.get("gate", "none")
+        if gate_type == "cn_origin":
+            allowed = set(cn) if cn else None
+        elif gate_type == "customer_cone":
+            cone = customer_cone(set(g["asns"]), p2c) if p2c else set()
+            allowed = (cone | cn) if (cone or cn) else None
+        else:
+            allowed = None
+        gates[key] = allowed
+        if allowed is not None:
+            any_gated = True
+    return gates if any_gated else None
+
+
 def parse_target_time(value: str) -> datetime:
     if value == "latest":
         return datetime.now(timezone.utc)
@@ -1567,7 +1821,8 @@ def build_providers(sources: list[str], config: dict, downloader: Downloader,
 
 def process_file(mrt: MrtFile, groups: dict, group_buffers: dict, stats: Stats,
                  allow_updates: bool, parser_mode: str = "native",
-                 external_tool: Optional[str] = None, verbose: bool = False) -> None:
+                 external_tool: Optional[str] = None, verbose: bool = False,
+                 group_gates: Optional[dict] = None) -> None:
     """Parse a single downloaded MRT file into the group buffers."""
     if mrt.local_path is None:
         return
@@ -1583,7 +1838,7 @@ def process_file(mrt: MrtFile, groups: dict, group_buffers: dict, stats: Stats,
     try:
         count = 0
         for record in record_iter:
-            flush_route(record, groups, group_buffers, stats)
+            flush_route(record, groups, group_buffers, stats, group_gates=group_gates)
             count += 1
             if verbose and count % 500000 == 0:
                 LOG.debug("  %s/%s: %d records parsed so far", mrt.source, mrt.collector, count)
@@ -1600,17 +1855,19 @@ def _parse_file_worker(task: tuple) -> dict:
     Runs in a separate process, so it must be a module-level function and must
     not touch any shared/mutable main-process state.
     """
-    mrt, parser_mode, external_tool = task
+    mrt, parser_mode, external_tool, group_gates = task
     buffers = {key: {"v4": set(), "v6": set()} for key in GROUPS}
     stats = Stats()
     process_file(mrt, GROUPS, buffers, stats, allow_updates=False,
-                 parser_mode=parser_mode, external_tool=external_tool, verbose=False)
+                 parser_mode=parser_mode, external_tool=external_tool, verbose=False,
+                 group_gates=group_gates)
     return {
         "url": mrt.url,
         "buffers": {k: {"v4": list(v["v4"]), "v6": list(v["v6"])} for k, v in buffers.items()},
         "raw": stats.total_raw_routes_seen,
         "matched": stats.total_matched_routes,
         "filtered": stats.total_filtered_cn_to_t1,
+        "foreign_origin": stats.total_filtered_foreign_origin,
         "parse_errors": stats.parse_errors,
         "invalid": stats.invalid_prefixes,
         "warnings": stats.warnings,
@@ -1653,6 +1910,38 @@ def run(args) -> int:
             for w in stats.warnings:
                 print(f"  - {w}")
         return 0
+
+    # --- per-group origin gates ----------------------------------------
+    # Grouping stays path-based, but each group applies its own origin gate:
+    #   cn_origin     tables keep only CN-registered origins (mainland domestic)
+    #   customer_cone tables keep origins in the operator's CAIDA customer cone
+    #                 (operator + real customers incl. international; excludes
+    #                 peers/upstreams that are merely transited)
+    cn_origin_asns: Optional[set] = None
+    if not args.no_origin_gate and any(g.get("gate") == "cn_origin" for g in GROUPS.values()):
+        ccs = {c.strip().upper() for c in args.gate_origin_country.split(",") if c.strip()}
+        rir_urls = [u.strip() for u in args.rir_stats_url.split(",") if u.strip()]
+        cn_set = load_origin_gate_asns(downloader, rir_urls, ccs, cache_dir, stats)
+        if cn_set:
+            cn_origin_asns = cn_set | set(ASN_MAP.keys())
+            LOG.info("cn-origin gate: %d allowed origin ASN(s) (cc=%s + operator ASNs)",
+                     len(cn_origin_asns), ",".join(sorted(ccs)))
+        else:
+            stats.warn("cn-origin gate requested but no ASN data available; disabled")
+
+    p2c: Optional[dict] = None
+    if not args.no_cone_gate and any(g.get("gate") == "customer_cone" for g in GROUPS.values()):
+        caida_urls = [u.strip() for u in args.caida_asrel_url.split(",") if u.strip()]
+        p2c = load_provider_customer_map(downloader, caida_urls, target_time, cache_dir, stats)
+        if not p2c:
+            stats.warn("customer-cone gate requested but no CAIDA data; disabled")
+
+    group_gates = build_group_gates(GROUPS, cn_origin_asns, p2c)
+    if group_gates:
+        for key, g in GROUPS.items():
+            if group_gates.get(key) is not None:
+                LOG.info("gate[%s] = %s (%d allowed origin ASNs)",
+                         key, g.get("gate"), len(group_gates[key]))
 
     # --- parser selection ----------------------------------------------
     #   mrtparse -> pure-Python, most compatible (updates, exotic formats)
@@ -1709,6 +1998,7 @@ def run(args) -> int:
         stats.total_raw_routes_seen += result["raw"]
         stats.total_matched_routes += result["matched"]
         stats.total_filtered_cn_to_t1 += result["filtered"]
+        stats.total_filtered_foreign_origin += result.get("foreign_origin", 0)
         stats.parse_errors += result["parse_errors"]
         stats.invalid_prefixes += result["invalid"]
         stats.warnings.extend(result["warnings"])
@@ -1735,7 +2025,7 @@ def run(args) -> int:
     with ProcessPool(max_workers=parse_workers) as ppool:
         fut_to_mrt = {}
         for mrt in downloaded:
-            fut = ppool.submit(_parse_file_worker, (mrt, parser_mode, external_tool))
+            fut = ppool.submit(_parse_file_worker, (mrt, parser_mode, external_tool, group_gates))
             fut_to_mrt[fut] = mrt
         for pf in tqdm(concurrent.futures.as_completed(fut_to_mrt), total=len(fut_to_mrt),
                        desc="parse", disable=not args.verbose):
@@ -1780,6 +2070,7 @@ def run(args) -> int:
         "total_raw_routes_seen": stats.total_raw_routes_seen,
         "total_matched_routes": stats.total_matched_routes,
         "total_filtered_cn_to_t1": stats.total_filtered_cn_to_t1,
+        "total_filtered_foreign_origin": stats.total_filtered_foreign_origin,
         "parse_errors": stats.parse_errors,
         "invalid_prefixes": stats.invalid_prefixes,
     }
@@ -1797,6 +2088,7 @@ def run(args) -> int:
         "total_raw_routes_seen": stats.total_raw_routes_seen,
         "total_matched_routes": stats.total_matched_routes,
         "total_filtered_cn_to_t1": stats.total_filtered_cn_to_t1,
+        "total_filtered_foreign_origin": stats.total_filtered_foreign_origin,
     }, indent=2))
     return 0
 
@@ -1842,6 +2134,21 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--timeout", type=int, default=120,
                    help="Per-request timeout in seconds (PCH can be slow to start; "
                         "raise this if PCH HEAD/GET times out).")
+    p.add_argument("--no-origin-gate", action="store_true",
+                   help="Disable the CN-origin gate on the mainland-domestic tables "
+                        "(cn_origin groups fall back to path-only matching).")
+    p.add_argument("--gate-origin-country", default="CN",
+                   help="Comma-separated country codes whose ASNs count as valid origins "
+                        "for the domestic tables (default CN; add HK,MO,TW to include those).")
+    p.add_argument("--rir-stats-url", default=",".join(DEFAULT_RIR_STATS_URLS),
+                   help="Comma-separated RIR 'delegated-extended' stats URLs used to build "
+                        "the origin-country ASN set.")
+    p.add_argument("--no-cone-gate", action="store_true",
+                   help="Disable the customer-cone gate on the incl.-international tables "
+                        "(customer_cone groups fall back to path-only matching).")
+    p.add_argument("--caida-asrel-url", default=",".join(DEFAULT_CAIDA_ASREL_URLS),
+                   help="Comma-separated CAIDA as-rel2 URL templates ({YYYYMM} placeholder) "
+                        "used to build operator customer cones.")
     p.add_argument("--min-v4-prefix", type=int, default=MIN_V4_PREFIXLEN,
                    help="Reject IPv4 prefixes shorter than this (default 8; also "
                         "removes 0.0.0.0/0 and other over-broad prefixes).")
