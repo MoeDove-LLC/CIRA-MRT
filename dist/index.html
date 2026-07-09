@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>China ASN CIDR Lists</title>
+<style>
+  :root { --bg:#fff; --fg:#1a1a1a; --muted:#6b7280; --line:#e5e7eb;
+           --accent:#2563eb; --chip:#eef2ff; --chipfg:#3730a3; --card:#fafafa; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#0f1115; --fg:#e5e7eb; --muted:#9aa3b2; --line:#232833;
+             --accent:#7aa2ff; --chip:#1e2537; --chipfg:#b7c3ff; --card:#151922; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,
+          "PingFang SC","Microsoft YaHei",sans-serif; background:var(--bg); color:var(--fg); }
+  .wrap { max-width:56rem; margin:0 auto; padding:2rem 1.1rem 4rem; }
+  header { display:flex; flex-wrap:wrap; align-items:baseline; justify-content:space-between; gap:.5rem; }
+  h1 { font-size:1.5rem; margin:.2rem 0; letter-spacing:.2px; }
+  .home { font-size:.92rem; text-decoration:none; color:var(--accent); white-space:nowrap; }
+  .home:hover { text-decoration:underline; }
+  .sub { color:var(--muted); margin:.2rem 0 1.4rem; font-size:.94rem; }
+  h2 { font-size:1rem; margin:1.8rem 0 .5rem; display:flex; align-items:center; gap:.5rem; }
+  .chip { background:var(--chip); color:var(--chipfg); font-size:.72rem; font-weight:600;
+           padding:.12rem .5rem; border-radius:999px; letter-spacing:.3px; }
+  table { width:100%; border-collapse:collapse; background:var(--card);
+           border:1px solid var(--line); border-radius:10px; overflow:hidden; }
+  th,td { text-align:left; padding:.55rem .8rem; border-bottom:1px solid var(--line); vertical-align:middle; }
+  thead th { font-size:.76rem; text-transform:uppercase; letter-spacing:.5px; color:var(--muted); font-weight:600; }
+  tr:last-child td { border-bottom:none; }
+  td.name { font-weight:600; }
+  td.file a { color:var(--accent); text-decoration:none; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:.86rem; }
+  td.file a:hover { text-decoration:underline; }
+  .n { color:var(--muted); font-size:.8rem; margin-left:.5rem; }
+  footer { color:var(--muted); font-size:.85rem; margin-top:2rem; border-top:1px solid var(--line); padding-top:1rem; }
+  footer a { color:var(--accent); }
+  code { background:var(--chip); padding:.05em .35em; border-radius:4px; font-size:.85em; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>China ASN CIDR Lists</h1>
+    <a class="home" href="https://cira.moedove.com/">← 返回主站 cira.moedove.com</a>
+  </header>
+  <p class="sub">由公共 MRT route collector（RouteViews / RIPE RIS / PCH）自動彙整的
+  中國各大運營商 IPv4 / IPv6 CIDR 聚合清單，純文字、每行一條。</p>
+
+  <h2>China <span class="chip">境內 · CN origin</span></h2>
+  <table>
+    <thead><tr><th>Group</th><th>IPv4</th><th>IPv6</th></tr></thead>
+    <tbody>
+<tr><td class="name">China Telecom (China)</td><td class="file"><a href="./chinatelecom_v4.txt">chinatelecom_v4.txt</a><span class="n">3,896</span></td><td class="file"><a href="./chinatelecom_v6.txt">chinatelecom_v6.txt</a><span class="n">1,540</span></td></tr>
+<tr><td class="name">China Unicom (China)</td><td class="file"><a href="./chinaunicom_v4.txt">chinaunicom_v4.txt</a><span class="n">3,789</span></td><td class="file"><a href="./chinaunicom_v6.txt">chinaunicom_v6.txt</a><span class="n">1,779</span></td></tr>
+<tr><td class="name">China Mobile (China)</td><td class="file"><a href="./chinamobile_v4.txt">chinamobile_v4.txt</a><span class="n">3,759</span></td><td class="file"><a href="./chinamobile_v6.txt">chinamobile_v6.txt</a><span class="n">1,084</span></td></tr>
+<tr><td class="name">Education &amp; Research Network (China)</td><td class="file"><a href="./cernet_edu_v4.txt">cernet_edu_v4.txt</a><span class="n">203</span></td><td class="file"><a href="./cernet_edu_v6.txt">cernet_edu_v6.txt</a><span class="n">94</span></td></tr>
+<tr><td class="name">China Domestic (China)</td><td class="file"><a href="./china_domestic_all_v4.txt">china_domestic_all_v4.txt</a><span class="n">3,954</span></td><td class="file"><a href="./china_domestic_all_v6.txt">china_domestic_all_v6.txt</a><span class="n">1,010</span></td></tr>
+    </tbody>
+  </table>
+
+  <h2>Global <span class="chip">含國際客戶 · customer cone</span></h2>
+  <table>
+    <thead><tr><th>Group</th><th>IPv4</th><th>IPv6</th></tr></thead>
+    <tbody>
+<tr><td class="name">China Telecom (Global)</td><td class="file"><a href="./chinatelecom_global_v4.txt">chinatelecom_global_v4.txt</a><span class="n">60,747</span></td><td class="file"><a href="./chinatelecom_global_v6.txt">chinatelecom_global_v6.txt</a><span class="n">13,435</span></td></tr>
+<tr><td class="name">China Unicom (Global)</td><td class="file"><a href="./chinaunicom_global_v4.txt">chinaunicom_global_v4.txt</a><span class="n">6,418</span></td><td class="file"><a href="./chinaunicom_global_v6.txt">chinaunicom_global_v6.txt</a><span class="n">1,965</span></td></tr>
+<tr><td class="name">China Mobile (Global)</td><td class="file"><a href="./chinamobile_global_v4.txt">chinamobile_global_v4.txt</a><span class="n">51,501</span></td><td class="file"><a href="./chinamobile_global_v6.txt">chinamobile_global_v6.txt</a><span class="n">5,320</span></td></tr>
+<tr><td class="name">China All (Global)</td><td class="file"><a href="./china_all_global_v4.txt">china_all_global_v4.txt</a><span class="n">85,968</span></td><td class="file"><a href="./china_all_global_v6.txt">china_all_global_v6.txt</a><span class="n">14,987</span></td></tr>
+    </tbody>
+  </table>
+
+  <footer>
+    Generated: 2026-07-09T14:11:58Z · <a href="./summary.json">summary.json</a><br>
+    數字為聚合後的 CIDR 條數。境內表要求 origin AS 註冊在中國；含國際客戶表以運營商
+    的 CAIDA 客戶錐判定。
+  </footer>
+</div>
+</body>
+</html>
