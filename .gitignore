@@ -1,11 +1,10 @@
-# Generated output & caches
-dist/
+# Local scratch output. NOTE: dist/ is intentionally NOT ignored — CI commits
+# it back to the repo so Cloudflare Pages / Gitee Pages can serve it.
 out*/
 b_native/
 b_bgpdump/
 *.mrt
 mrt_cache/
-summary.json
 
 # Python
 __pycache__/

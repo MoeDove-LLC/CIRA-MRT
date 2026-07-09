@@ -24,6 +24,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          persist-credentials: true   # keep the token so we can push dist/ back
 
       - name: Free up disk space
         run: |
@@ -45,6 +47,13 @@ jobs:
         env:
           MRT_CACHE_DIR: ${{ runner.temp }}/mrt-cache
         run: bash ci/build.sh dist
+
+      - name: Sync dist/ into the repo (for Cloudflare Pages)
+        env:
+          TARGET_BRANCH: ${{ github.ref_name }}
+          GIT_AUTHOR_NAME: github-actions[bot]
+          GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+        run: bash ci/commit_dist.sh dist
 
       - name: Publish GitHub Release (rolling 'latest')
         uses: softprops/action-gh-release@v2
