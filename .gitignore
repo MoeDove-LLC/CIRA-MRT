@@ -1,0 +1,15 @@
+# Generated output & caches
+dist/
+out*/
+b_native/
+b_bgpdump/
+*.mrt
+mrt_cache/
+summary.json
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+venv/
+.venv/

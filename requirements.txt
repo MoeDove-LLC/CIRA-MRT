@@ -1,0 +1,12 @@
+# Core dependencies for mrt_cn_routes.py
+netaddr>=0.10.1
+requests>=2.31.0
+PyYAML>=6.0
+tqdm>=4.66.0
+# mrtparse is only needed for the --parser mrtparse fallback (update replay /
+# exotic formats). The default 'native' and 'bgpdump' parsers do not require it,
+# but it is listed here so all parser modes work out of the box.
+mrtparse>=2.2.0
+
+# Testing (optional at runtime, required to run the unit tests)
+pytest>=7.4.0

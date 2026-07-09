@@ -1,0 +1,69 @@
+name: Build and publish CN route lists
+
+on:
+  schedule:
+    - cron: '30 3 * * *'      # daily at 03:30 UTC
+  workflow_dispatch: {}         # allow manual runs from the Actions tab
+
+permissions:
+  contents: write               # needed to create releases and move the tag
+
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      # Surfaced from secrets so the optional Gitee-mirror step can be gated.
+      GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+      GITEE_OWNER: ${{ secrets.GITEE_OWNER }}
+      GITEE_REPO: ${{ secrets.GITEE_REPO }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Free up disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
+                      /opt/hostedtoolcache/CodeQL /usr/local/share/boost || true
+          df -h /
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Run unit tests
+        run: |
+          pip install -r requirements.txt
+          pytest -q
+
+      - name: Build route lists
+        env:
+          MRT_CACHE_DIR: ${{ runner.temp }}/mrt-cache
+        run: bash ci/build.sh dist
+
+      - name: Publish GitHub Release (rolling 'latest')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Latest CN route lists
+          body: |
+            Auto-generated China ASN CIDR aggregation lists (IPv4 / IPv6).
+            Rebuilt on each run from public MRT collectors (RouteViews, RIPE RIS, PCH).
+            Files are uncompressed `.txt` with stable names; download any directly, e.g.:
+            `https://github.com/${{ github.repository }}/releases/download/latest/china_all_v4.txt`
+          files: |
+            dist/*.txt
+            dist/summary.json
+
+      # OPTIONAL: also mirror the same files to a Gitee release from here.
+      # Set repo secrets GITEE_TOKEN / GITEE_OWNER / GITEE_REPO to enable.
+      - name: Mirror to Gitee release (optional)
+        if: ${{ env.GITEE_TOKEN != '' }}
+        env:
+          GITEE_BRANCH: master
+        run: bash ci/publish_gitee.sh dist

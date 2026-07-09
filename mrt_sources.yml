@@ -1,0 +1,136 @@
+# mrt_sources.yml — active source configuration for mrt_cn_routes.py
+#
+# Full-coverage configuration: every RouteViews and RIPE RIS collector is
+# listed, and PCH auto-enumerates ALL of its collectors. Combined with
+# `--max-files-per-source 0` (the default = no limit) this fetches the complete
+# set for the most accurate analysis.
+#
+# WARNING: this is a LOT of data. RouteViews + RIS full-table RIBs are hundreds
+# of MB each, and PCH has ~300 collectors (v4 + v6 per collector). A full run
+# downloads tens to hundreds of GB and can take hours. Trim the lists below if
+# you want a lighter run. Unreachable files are skipped with a warning.
+#
+# Isolario has been removed (the project shut down).
+
+sources:
+
+  # =========================================================================
+  # RouteViews — all MRT collectors. route-views6 is IPv6-only; route-views2..5
+  # are large full tables; the rest are dual-stack IXP vantage points. Discovery
+  # uses the RouteViews metadata API (exact latest RIB) with archive fallback.
+  # =========================================================================
+  routeviews:
+    enabled: true
+    use_api: true
+    collectors:
+      - "route-views2"
+      - "route-views3"
+      - "route-views4"
+      - "route-views5"
+      - "route-views6"          # IPv6-only
+      - "route-views7"
+      - "route-views8"
+      - "amsix.ams"
+      - "cix.atl"
+      - "crix.sjo"
+      - "getafix.mnl"
+      - "decix.fra"
+      - "decix.jhb"
+      - "hkix.hkg"              # Hong Kong (close to CN)
+      - "netnod.mmx"
+      - "route-views.bdix"
+      - "route-views.bknix"
+      - "route-views.chicago"
+      - "route-views.chile"
+      - "route-views.eqix"
+      - "route-views.flix"
+      - "route-views.gixa"
+      - "route-views.gorex"
+      - "interlan.otp"
+      - "iix.cgk"
+      - "iraq-ixp.bgw"
+      - "route-views.isc"
+      - "ixpn.los"
+      - "kinx.icn"             # Seoul
+      - "namex.fco"
+      - "route-views.kixp"
+      - "route-views.jinx"
+      - "locix.fra"
+      - "route-views.linx"
+      - "route-views.mwix"
+      - "route-views.napafrica"
+      - "route-views.nwax"
+      - "pacwave.lax"
+      - "pit.scl"
+      - "pitmx.qro"
+      - "route-views.phoix"
+      - "route-views.telxatl"
+      - "route-views.wide"     # Tokyo (Asia)
+      - "route-views.sydney"
+      - "ix-br.gru"
+      - "ix-br2.gru"
+      - "route-views.sg"       # Singapore (Asia)
+      - "route-views.perth"
+      - "route-views.peru"
+      - "route-views.sfmix"
+      - "route-views.siex"
+      - "route-views.soxrs"
+      - "route-views.rio"
+      - "route-views.fortaleza"
+      - "route-views.uaeix"
+      - "route-views.ny"
+
+  # =========================================================================
+  # RIPE RIS — all 23 ACTIVE route collectors (authoritative list from
+  # ris.ripe.net). Historic/decommissioned RRC02, RRC08, RRC09 are excluded.
+  # rrc00/rrc25 (Amsterdam) and rrc24 (Montevideo) are multi-hop collectors
+  # with global/regional scope — very broad coverage. rrc06 (Tokyo), rrc23
+  # (Singapore), rrc26 (Dubai), rrc13 (Moscow) are the Asia/nearby vantage
+  # points. All carry IPv4 + IPv6.
+  # =========================================================================
+  ris:
+    enabled: true
+    collectors:
+      - "rrc00"                 # Amsterdam, NL — multihop, global
+      - "rrc01"                 # London, GB — LINX, LONAP
+      - "rrc03"                 # Amsterdam, NL — AMS-IX, NL-IX
+      - "rrc04"                 # Geneva, CH — CIXP
+      - "rrc05"                 # Vienna, AT — VIX
+      - "rrc06"                 # Otemachi, JP — DIX-IE, JPIX (Asia)
+      - "rrc07"                 # Stockholm, SE — Netnod
+      - "rrc10"                 # Milan, IT — MIX
+      - "rrc11"                 # New York, US — NYIIX
+      - "rrc12"                 # Frankfurt, DE — DE-CIX
+      - "rrc13"                 # Moscow, RU — MSK-IX
+      - "rrc14"                 # Palo Alto, US — PAIX
+      - "rrc15"                 # Sao Paulo, BR — PTTMetro-SP
+      - "rrc16"                 # Miami, US — Equinix Miami
+      - "rrc18"                 # Barcelona, ES — CATNIX
+      - "rrc19"                 # Johannesburg, ZA — NAP Africa JB
+      - "rrc20"                 # Zurich, CH — SwissIX
+      - "rrc21"                 # Paris/Marseille, FR — France-IX
+      - "rrc22"                 # Bucharest, RO — Interlan
+      - "rrc23"                 # Singapore, SG — Equinix Singapore (Asia)
+      - "rrc24"                 # Montevideo, UY — multihop, LACNIC region
+      - "rrc25"                 # Amsterdam, NL — multihop, global
+      - "rrc26"                 # Dubai, AE — UAE-IX
+
+  # =========================================================================
+  # PCH — daily per-collector snapshots (v4 + v6 each). Download root:
+  #   {base_url}/IPv4_daily_snapshots/{YYYY}/{MM}/{collector}/
+  #       {collector}-ipv4_bgp_routes.{YYYY}.{MM}.{DD}.gz
+  #   {base_url}/IPv6_daily_snapshots/{YYYY}/{MM}/{collector}/
+  #       {collector}-ipv6_bgp_routes.{YYYY}.{MM}.{DD}.gz
+  #
+  # `collectors: []` -> the script auto-enumerates EVERY collector present under
+  # the monthly index (index_base_url), i.e. full coverage without maintaining a
+  # ~300-entry list by hand. To restrict PCH, list specific collector hostnames
+  # here instead (e.g. "route-collector.hkg.pch.net").
+  # =========================================================================
+  pch:
+    enabled: false
+    base_url: "https://downloads.pch.net/files/Routing_Data"
+    index_base_url: "https://downloads.pch.net/Routing_Data"
+    ipv6: true
+    date_lookback_days: 2
+    collectors: []              # empty = auto-enumerate ALL PCH collectors

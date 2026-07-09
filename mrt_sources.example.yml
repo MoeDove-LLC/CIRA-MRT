@@ -1,0 +1,83 @@
+# Example source configuration for mrt_cn_routes.py
+#
+# Copy this file to mrt_sources.yml and adjust it for your needs.
+# If mrt_sources.yml does not exist, the script falls back to the built-in
+# defaults, which mirror the structure shown here.
+#
+# Notes:
+#   * PCH and Isolario public archives move around / go offline frequently.
+#     Fill in `base_urls`, `collectors` and `url_templates` with a currently
+#     reachable archive when you know one. If nothing is reachable the script
+#     only emits a warning and keeps going (unless --fail-fast).
+#   * url_templates support the following placeholders:
+#       {collector} {YYYY} {MM} {DD} {HH} {mm}
+#       {YYYYMMDD}  {HHmm}  {YYYY.MM}
+#   * allow_updates_without_rib: when false (default), files that are clearly
+#     "updates" (not full RIB/table/bview snapshots) are listed as warnings
+#     only and never contribute to the final CIDR output.
+
+sources:
+  routeviews:
+    enabled: true
+    # Prefer the RouteViews metadata API for collector discovery + latest RIB.
+    use_api: true
+    collectors:
+      - "route-views2"
+      - "route-views3"
+      - "route-views4"
+      - "route-views6"
+      - "route-views.eqix"
+      - "route-views.sg"
+      - "route-views.linx"
+
+  ris:
+    enabled: true
+    # RIPE RIS bview dumps live at:
+    #   https://data.ris.ripe.net/{collector}/{YYYY.MM}/bview.{YYYYMMDD}.{HHmm}.gz
+    collectors:
+      - "rrc00"
+      - "rrc01"
+      - "rrc03"
+      - "rrc04"
+      - "rrc10"
+      - "rrc11"
+      - "rrc12"
+      - "rrc13"
+      - "rrc14"
+      - "rrc15"
+      - "rrc16"
+      - "rrc18"
+      - "rrc19"
+      - "rrc20"
+      - "rrc21"
+      - "rrc22"
+      - "rrc23"
+      - "rrc24"
+      - "rrc25"
+      - "rrc26"
+
+  pch:
+    enabled: true
+    # Real download root (note the /files/ segment). Daily per-collector
+    # snapshots live at:
+    #   {base_url}/IPv4_daily_snapshots/{YYYY}/{MM}/{collector}/
+    #       {collector}-ipv4_bgp_routes.{YYYY}.{MM}.{DD}.gz
+    #   {base_url}/IPv6_daily_snapshots/{YYYY}/{MM}/{collector}/
+    #       {collector}-ipv6_bgp_routes.{YYYY}.{MM}.{DD}.gz
+    base_url: "https://downloads.pch.net/files/Routing_Data"
+    # Leave empty to use the built-in Asia/HK default collector list, or list
+    # PCH collector hostnames explicitly, e.g. "route-collector.hkg.pch.net".
+    collectors: []
+    ipv6: true
+    # PCH publishes daily; "today" may not exist yet, so walk back up to N days.
+    date_lookback_days: 2
+
+  isolario:
+    enabled: true
+    # Isolario public data is frequently unreachable / discontinued. Provide a
+    # working archive index and template here if you have one.
+    base_urls: []
+    index_url: ""
+    collectors: []
+    url_templates: []
+    allow_updates_without_rib: false
