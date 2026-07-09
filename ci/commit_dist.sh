@@ -12,7 +12,12 @@
 set -euo pipefail
 
 DIST="${1:-dist}"
-MSG="${DIST_COMMIT_MSG:-chore(data): update route lists [skip ci]}"
+# NOTE: use "[skip actions]" (a GitHub-only skip marker), NOT "[skip ci]".
+# Cloudflare Pages treats "[skip ci]" / "[Skip CI]" as a skip-deploy marker and
+# would NOT deploy the new dist/. "[skip actions]" is honoured by GitHub Actions
+# (prevents any re-trigger loop) but ignored by Cloudflare Pages, so Pages still
+# deploys. (This workflow has no push trigger anyway, so it is belt-and-braces.)
+MSG="${DIST_COMMIT_MSG:-chore(data): update route lists [skip actions]}"
 
 branch="${TARGET_BRANCH:-$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)}"
 [ "$branch" = "HEAD" ] && branch="${DEFAULT_BRANCH:-main}"
