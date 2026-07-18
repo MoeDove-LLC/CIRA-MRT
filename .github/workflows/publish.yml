@@ -18,7 +18,6 @@ jobs:
       - self-hosted
       - linux
       - x64
-      - docker
     timeout-minutes: 180
     env:
       # Surfaced from secrets so the optional Gitee-mirror step can be gated.
