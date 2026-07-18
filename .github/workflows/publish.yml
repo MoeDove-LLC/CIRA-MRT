@@ -14,10 +14,7 @@ concurrency:
 
 jobs:
   build-and-publish:
-    runs-on:
-      - self-hosted
-      - linux
-      - x64
+    runs-on: ubuntu-latest
     timeout-minutes: 180
     env:
       # Surfaced from secrets so the optional Gitee-mirror step can be gated.
