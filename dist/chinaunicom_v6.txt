@@ -1,6 +1,6 @@
 # Group: China Unicom (China)
 # Key: chinaunicom
-# Generated: 2026-07-30T06:36:14Z
+# Generated: 2026-07-31T07:00:19Z
 # Total ASNs: 2
 # ASN List: 4837, 9929
 # Details:
@@ -883,6 +883,7 @@
 2404:bc0:4300::/44
 2404:bc0:4400::/43
 2404:bc0:4500::/43
+2404:bc0:4620::/44
 2404:bc0:4f00::/43
 2404:1c80::/32
 2404:3700::/48
