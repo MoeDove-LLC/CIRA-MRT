@@ -229,11 +229,16 @@ path 比對會把「目標運營商只是中轉」的外部網段一起收進來
 「客戶(下游)」與「對等/上游」)。因此每個 group 再套一種 **origin 閘門**,一次產出
 兩層:
 
-- **China 層(`cn_origin`)**:要求 prefix 的 origin AS **註冊在中國**。CN ASN 清單
-  取自**全部五個 RIR** 的 delegated-extended 統計(APNIC / RIPE / ARIN / LACNIC /
-  AFRINIC),union 後篩 `cc=CN`——這樣連在 RIPE 等註冊、但國別為 CN 的 ASN 也能收到。
-- **Global 層(`customer_cone`)**:要求 origin AS 在該運營商的 **CAIDA 客戶錐**內
-  (operator + 各級真實客戶,含國際;peer/上游被排除),再聯集 CN origin。
+- **China 層(`domestic_customer_cone`)**:origin AS 必須註冊在中國,並且從
+  **距離 origin 最近的運營商錨點 ASN** 到 origin 的每一跳都必須是 CAIDA
+  `provider→customer`。CN 身份只負責境內篩選,不能繞過客戶關係驗證。
+- **Global 層(`customer_cone`)**:不限制 origin 國別,但同樣要求最近運營商錨點到
+  origin 全程是 `provider→customer`。若 AS_PATH 同時包含多家運營商,只由距離
+  origin 最近的一家認領;真實多宿主客戶仍可從不同觀測路徑分別進入多家清單。
+
+下游、省網與 IDC ASN **不硬編碼**。程式只維護運營商自身可確認的錨點 ASN,
+客戶及多級客戶完全依每條 AS_PATH 與 CAIDA p2c 關係動態判定。未知關係採 fail-closed,
+不再用「origin 是 CN ASN」作兜底,避免聯通/移動/電信互相吞入對方客戶錐。
 
 **失敗即中止(fail loud)**:只要「已啟用的閘門」抓不到資料(任一 RIR 失敗,或
 CAIDA 完全抓不到),程式會**印出詳細錯誤並以非 0 結束**(CI 變紅、不提交),避免

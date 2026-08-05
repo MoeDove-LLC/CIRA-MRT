@@ -222,12 +222,12 @@ def test_cone_gate_includes_real_customer():
     assert "203.0.114.0/24" in buffers["mobile_global"]["v4"]
 
 
-# Rule 2: a CN-registered origin is admitted even when the path chain is broken.
-def test_cone_gate_includes_cn_origin_even_without_chain():
-    # 58453<->4826 not a customer link, but origin 4808 is CN-registered.
+# CN registration alone must not bypass the verified downstream chain.
+def test_cone_gate_rejects_cn_origin_without_chain():
+    # 58453<->4826 is not a customer link, even though origin 4808 is CN.
     buffers = _flush_one([58453, 4826, 4808],
                          "1.2.4.0/24", _MOBILE_GLOBAL, cn={4808}, p2c={})
-    assert "1.2.4.0/24" in buffers["mobile_global"]["v4"]
+    assert "1.2.4.0/24" not in buffers["mobile_global"]["v4"]
 
 
 # Extra: normalize handles mrtparse-style segment dicts.

@@ -97,63 +97,89 @@ T1_ASNS = {
     3491, 5511, 6453, 6461, 6762, 7018,
 }
 
-# Two tiers, distinguished by name and origin gate:
-#   "China"  tables (gate = cn_origin)     -> mainland only: ORIGIN AS must be
-#            China-registered. No international customers.
-#   "Global" tables (gate = customer_cone) -> operator + international customers:
-#            ORIGIN AS in the operator's CAIDA customer cone (peers/upstreams it
-#            merely transits are excluded), unioned with CN origins for
-#            completeness.
-# Keys ending in _global are the Global tier; the rest are the China tier.
+# Two tiers, both using per-route provider->customer validation:
+#   "China"  tables require a CN-registered origin AND a verified downstream
+#            chain from the nearest operator anchor to the origin.
+#   "Global" tables require the same verified downstream chain, without a
+#            country restriction. CN registration alone never proves that an
+#            origin is a customer's network.
+#
+# ``family`` identifies only operator-owned anchor ASNs. Customer/provincial
+# ASNs are deliberately not hard-coded; they are discovered from CAIDA p2c
+# relationships along each route's actual AS_PATH.
 GROUPS = {
-    # --- China tier (mainland, CN origin) --------------------------------
+    # --- China tier (mainland downstream customer cone) -------------------
     "chinatelecom": {
         "name": "China Telecom (China)",
         "asns": [4134],
-        "gate": "cn_origin",
+        "family": "chinatelecom",
+        "gate": "domestic_customer_cone",
     },
     "chinaunicom": {
         "name": "China Unicom (China)",
         "asns": [4837, 9929],
-        "gate": "cn_origin",
+        "family": "chinaunicom",
+        "gate": "domestic_customer_cone",
     },
     "chinamobile": {
         "name": "China Mobile (China)",
         "asns": [9808],
-        "gate": "cn_origin",
+        "family": "chinamobile",
+        "gate": "domestic_customer_cone",
     },
     "cernet_edu": {
         "name": "Education & Research Network (China)",
         "asns": [4538, 23911, 7497],
-        "gate": "cn_origin",
+        "family": "cernet_edu",
+        "gate": "domestic_customer_cone",
     },
     "china_domestic_all": {
         "name": "China Domestic (China)",
         "asns": [4134, 4837, 9929, 9808, 4538, 23911, 7497, 146762],
-        "gate": "cn_origin",
+        "aggregate": True,
+        "gate": "domestic_customer_cone",
     },
-    # --- Global tier (incl. international customers, customer cone) -------
+    # --- Global tier (incl. international downstream customers) -----------
     "chinatelecom_global": {
         "name": "China Telecom (Global)",
         "asns": [4134, 4809, 23764],
+        "family": "chinatelecom",
         "gate": "customer_cone",
     },
     "chinaunicom_global": {
         "name": "China Unicom (Global)",
         "asns": [4837, 9929, 10099],
+        "family": "chinaunicom",
         "gate": "customer_cone",
     },
     "chinamobile_global": {
         "name": "China Mobile (Global)",
         "asns": [9808, 58453, 58807, 268862, 137872, 209141, 9231, 135054, 328787, 132389, 139619, 141419],
+        "family": "chinamobile",
         "gate": "customer_cone",
     },
     "china_all_global": {
         "name": "China All (Global)",
         "asns": list(ASN_MAP.keys()),
+        "aggregate": True,
         "gate": "customer_cone",
     },
 }
+
+# Build the anchor map from operator-owned ASNs already declared in GROUPS.
+# This is not a customer list: downstream ASNs remain entirely data-driven.
+OPERATOR_FAMILY_ASNS: dict[str, set[int]] = {}
+for _group in GROUPS.values():
+    _family = _group.get("family")
+    if _family:
+        OPERATOR_FAMILY_ASNS.setdefault(_family, set()).update(_group["asns"])
+
+OPERATOR_ANCHOR_FAMILY: dict[int, str] = {}
+for _family, _asns in OPERATOR_FAMILY_ASNS.items():
+    for _asn in _asns:
+        _previous = OPERATOR_ANCHOR_FAMILY.setdefault(_asn, _family)
+        if _previous != _family:
+            raise ValueError(f"operator anchor AS{_asn} belongs to multiple families")
 
 # The set of Chinese ASNs used as the *left* side of the CN -> T1 adjacency
 # filter. Semantically this is "any Chinese carrier ASN we track", i.e. all of
@@ -1164,6 +1190,54 @@ def path_customer_chain_ok(seq: list[int], seeds, p2c: dict) -> bool:
     return False
 
 
+def nearest_operator_anchor(
+    seq: list[int],
+    anchor_families: dict[int, str] = OPERATOR_ANCHOR_FAMILY,
+) -> tuple[Optional[str], Optional[int]]:
+    """Return the operator family and index nearest to the route origin.
+
+    Searching from right to left prevents an upstream/peer operator earlier in
+    the path from claiming another operator and its entire customer cone. For
+    example ``4837 9808 24445`` is anchored to China Mobile (9808), not Unicom.
+    """
+    for index in range(len(seq) - 1, -1, -1):
+        family = anchor_families.get(seq[index])
+        if family is not None:
+            return family, index
+    return None, None
+
+
+def customer_chain_from_index_ok(seq: list[int], anchor_index: Optional[int],
+                                 p2c: dict) -> bool:
+    """Validate every hop from one selected anchor to the origin as p2c."""
+    if anchor_index is None or anchor_index < 0 or anchor_index >= len(seq):
+        return False
+    for index in range(anchor_index, len(seq) - 1):
+        customers = p2c.get(seq[index])
+        if not customers or seq[index + 1] not in customers:
+            return False
+    return True
+
+
+def has_ambiguous_as_set(as_path) -> bool:
+    """True when an AS_SET prevents deterministic per-hop ownership."""
+    return any(seg.kind == "SET" for seg in normalize_as_path(as_path))
+
+
+def classify_operator_customer_path(
+    seq: list[int],
+    p2c: dict,
+    anchor_families: dict[int, str] = OPERATOR_ANCHOR_FAMILY,
+) -> Optional[str]:
+    """Classify a route by its nearest anchor after strict p2c validation."""
+    family, anchor_index = nearest_operator_anchor(seq, anchor_families)
+    if family is None:
+        return None
+    if not customer_chain_from_index_ok(seq, anchor_index, p2c):
+        return None
+    return family
+
+
 def flush_route(
     record: RouteRecord,
     groups: dict,
@@ -1173,23 +1247,13 @@ def flush_route(
     t1_asns: Iterable[int] = T1_ASNS,
     group_gates: Optional[dict] = None,
 ) -> None:
-    """Apply matching + filtering for a single route and buffer prefixes.
+    """Apply route matching and strict operator-customer ownership gates.
 
-    * Increments ``total_raw_routes_seen``.
-    * Validates the prefix; invalid ones are counted and skipped.
-    * Matches groups by AS_PATH membership (a route is grouped under an operator
-      if that operator's ASN appears anywhere in the path -- this keeps prefixes
-      originated by the operator's provincial/child ASNs that only transit the
-      backbone).
-    * Computes the CN->T1 verdict once (route-level).
-    * PER-GROUP GATE (if ``group_gates`` given): each matched group applies its
-      own gate spec before receiving the prefix. A ``cn`` spec (China tier) keeps
-      the prefix only when the ORIGIN AS is CN-registered. A ``cone`` spec
-      (Global tier) keeps it when the origin is CN-registered (rule 2) OR the
-      origin is reachable from an operator seed through a valley-free
-      provider->customer chain ON THIS AS_PATH (rule 1) -- so a prefix reached
-      only via the operator's peer/upstream (e.g. AS3462 via China Telecom, or a
-      customer of the operator's peer) is kept out.
+    AS_PATH membership remains a cheap candidate filter. Final ownership is
+    determined by the operator anchor nearest to the origin, followed by a
+    strict provider->customer check for every remaining hop. This retains
+    dynamically discovered downstream customers while preventing paths such as
+    ``4837 9808 24445`` from placing Mobile prefixes in Unicom's lists.
     """
     stats.total_raw_routes_seen += 1
 
@@ -1206,49 +1270,61 @@ def flush_route(
     if not all_asns:
         return
 
-    # Which groups does this route match (membership only)?
     matched_groups = [
-        key for key, g in groups.items()
-        if not set(g["asns"]).isdisjoint(all_asns)
+        key for key, group in groups.items()
+        if not set(group["asns"]).isdisjoint(all_asns)
     ]
     if not matched_groups:
         return
 
-    cn_to_t1 = is_cn_to_t1_path(record.as_path, cn_asns, t1_asns)
-    if cn_to_t1:
+    if is_cn_to_t1_path(record.as_path, cn_asns, t1_asns):
         stats.total_filtered_cn_to_t1 += 1
         return
 
     origins = route_origin_asns(record.as_path) if group_gates else None
-    ordered = None  # AS_PATH flattened on demand for customer_cone groups
+    ordered: Optional[list[int]] = None
+    owner_family: Optional[str] = None
+    owner_evaluated = False
     version_key = "v4" if record.ip_version == 4 else "v6"
     added_any = False
+
     for key in matched_groups:
         spec = group_gates.get(key) if group_gates else None
         if spec is not None and origins is not None:
-            if spec["kind"] == "cn":
-                # China tier: origin must be a CN-registered ASN.
-                if origins.isdisjoint(_GATE_CN):
-                    continue
-            else:  # "cone" -- Global tier
-                # Keep if the origin is CN-registered (rule 2: CAIDA may miss it)
-                # OR reachable from an operator seed via a valley-free
-                # provider->customer chain on THIS path (rule 1). This excludes
-                # prefixes reached only over a peer/upstream link.
-                if origins.isdisjoint(_GATE_CN):
-                    if ordered is None:
-                        ordered = _ordered_seq(record.as_path)
-                    if not path_customer_chain_ok(ordered, spec["seeds"], _GATE_P2C):
-                        continue
-        # Buffers are sets: a prefix seen via many peers is stored once.
+            # Never fall back to path-only ownership when required gate data was
+            # explicitly disabled or unavailable. The affected table stays empty.
+            if not spec["enabled"]:
+                continue
+            if spec["kind"] == "domestic_cone" and origins.isdisjoint(_GATE_CN):
+                continue
+
+            # AS_SET has no deterministic order. Reject the route rather than
+            # stitching sequence segments across an ambiguous path boundary.
+            if has_ambiguous_as_set(record.as_path):
+                continue
+            if ordered is None:
+                ordered = _ordered_seq(record.as_path)
+
+            if len(origins) != 1 or not ordered or ordered[-1] not in origins:
+                continue
+
+            if not owner_evaluated:
+                owner_family = classify_operator_customer_path(ordered, _GATE_P2C)
+                owner_evaluated = True
+            if owner_family is None:
+                continue
+
+            # Aggregate groups accept every verified operator family; specific
+            # groups accept only their own nearest anchor family.
+            if not spec["aggregate"] and owner_family != spec["family"]:
+                continue
+
         group_buffers[key][version_key].add(record.prefix)
         added_any = True
 
     if added_any:
         stats.total_matched_routes += 1
     else:
-        # Matched by membership but gated out of every table (e.g. foreign
-        # origin / outside the customer cone).
         stats.total_filtered_foreign_origin += 1
 
 
@@ -2031,37 +2107,43 @@ def load_provider_customer_map(downloader: "Downloader", url_templates: list,
 
 def build_group_gates(groups: dict, cn_origin_asns: Optional[set],
                       p2c: Optional[dict]) -> Optional[dict]:
-    """Build the per-group gate specs from each group's gate type.
+    """Build strict per-group ownership gates.
 
-      * China tier (cn_origin)     -> ``{"kind": "cn"}``: keep CN-registered
-        origins only (strict; mainland, no international customers).
-      * Global tier (customer_cone) -> ``{"kind": "cone", "seeds": frozenset}``:
-        keep origins reachable from an operator seed via a valley-free
-        provider->customer chain on the route's own AS_PATH (rule 1), UNION
-        CN-registered origins (rule 2, to catch prefixes CAIDA might miss).
-        Peers/upstreams merely transited are excluded.
-
-    The heavy data (the CN set and the CAIDA provider->customer map) is NOT
-    embedded here -- it lives in the ``_GATE_P2C`` / ``_GATE_CN`` module globals
-    (see :func:`_init_gate_globals`) so it is never pickled per parse task. The
-    ``cn`` / ``p2c`` arguments are used only to decide whether a group is gated.
-
-    Returns None if every group ends up ungated (so gating can be skipped).
+    Domestic groups require both CN-origin data and CAIDA p2c topology. Global
+    groups require p2c topology. The gate stores only the intended operator
+    family; downstream customer ASNs are inferred per route and never embedded.
     """
     cn = cn_origin_asns or set()
     gates: dict = {}
     any_gated = False
-    for key, g in groups.items():
-        gate_type = g.get("gate", "none")
-        if gate_type == "cn_origin":
-            spec = {"kind": "cn"} if cn else None
+    for key, group in groups.items():
+        gate_type = group.get("gate", "none")
+        if gate_type == "domestic_customer_cone":
+            enabled = bool(cn and p2c)
+            kind = "domestic_cone"
         elif gate_type == "customer_cone":
-            # Gated when either the topology (rule 1) or the CN set (rule 2) is
-            # available; run() guarantees p2c is present for cone groups.
-            spec = ({"kind": "cone", "seeds": frozenset(g["asns"])}
-                    if (p2c or cn) else None)
+            enabled = bool(p2c)
+            kind = "global_cone"
         else:
-            spec = None
+            enabled = False
+            kind = "none"
+
+        family = group.get("family")
+        if family is None and not group.get("aggregate"):
+            candidate_families = {
+                OPERATOR_ANCHOR_FAMILY[asn]
+                for asn in group.get("asns", ())
+                if asn in OPERATOR_ANCHOR_FAMILY
+            }
+            if len(candidate_families) == 1:
+                family = next(iter(candidate_families))
+
+        spec = ({
+            "kind": kind,
+            "family": family,
+            "aggregate": bool(group.get("aggregate")),
+            "enabled": enabled,
+        } if gate_type in ("domestic_customer_cone", "customer_cone") else None)
         gates[key] = spec
         if spec is not None:
             any_gated = True
@@ -2199,7 +2281,7 @@ def run(args) -> int:
     #                 (operator + real customers incl. international; excludes
     #                 peers/upstreams that are merely transited)
     cn_origin_asns: Optional[set] = None
-    if not args.no_origin_gate and any(g.get("gate") == "cn_origin" for g in GROUPS.values()):
+    if not args.no_origin_gate and any(g.get("gate") == "domestic_customer_cone" for g in GROUPS.values()):
         ccs = {c.strip().upper() for c in args.gate_origin_country.split(",") if c.strip()}
         rir_urls = [u.strip() for u in args.rir_stats_url.split(",") if u.strip()]
         cn_set, errors = load_origin_gate_asns(downloader, rir_urls, ccs)
@@ -2221,7 +2303,7 @@ def run(args) -> int:
                  len(cn_origin_asns), ",".join(sorted(ccs)), len(rir_urls) - len(errors), len(errors))
 
     p2c: Optional[dict] = None
-    if not args.no_cone_gate and any(g.get("gate") == "customer_cone" for g in GROUPS.values()):
+    if not args.no_cone_gate and any(g.get("gate") in ("domestic_customer_cone", "customer_cone") for g in GROUPS.values()):
         caida_urls = [u.strip() for u in args.caida_asrel_url.split(",") if u.strip()]
         p2c, cone_err = load_provider_customer_map(downloader, caida_urls, target_time)
         if not p2c:
@@ -2239,13 +2321,11 @@ def run(args) -> int:
         for key, spec in group_gates.items():
             if spec is None:
                 continue
-            if spec["kind"] == "cn":
-                LOG.info("gate[%s] = cn_origin (%d CN-registered origin ASNs)",
-                         key, len(_GATE_CN))
-            else:
-                LOG.info("gate[%s] = customer_cone (per-path valley-free; "
-                         "%d seed ASN(s), %d providers in p2c, +%d CN origins)",
-                         key, len(spec["seeds"]), len(_GATE_P2C), len(_GATE_CN))
+            LOG.info(
+                "gate[%s] = %s (enabled=%s, family=%s, aggregate=%s, %d providers in p2c, %d CN origins)",
+                key, spec["kind"], spec["enabled"], spec["family"], spec["aggregate"],
+                len(_GATE_P2C), len(_GATE_CN),
+            )
 
     # --- parser selection ----------------------------------------------
     #   bgpkit   -> Rust bgpkit-parser (fastest; filters in-parser via --as-path)
