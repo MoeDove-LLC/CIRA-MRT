@@ -10,26 +10,33 @@ on:
       - "tests/test_filters.py"
       - "tests/test_operator_customer_gates.py"
       - ".github/workflows/validate-operator-customer-gates.yml"
+  push:
+    branches: [main]
+    paths:
+      - "mrt_cn_routes.py"
+      - "README.md"
+      - "tools/validate_operator_outputs.py"
+      - "tests/test_filters.py"
+      - "tests/test_operator_customer_gates.py"
+      - ".github/workflows/validate-operator-customer-gates.yml"
   workflow_dispatch: {}
 
 permissions:
   contents: read
 
 concurrency:
-  group: operator-gate-validation-${{ github.event.pull_request.number || github.ref_name }}
+  group: operator-gate-validation-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
   validate:
-    if: github.head_ref == 'agent/fix-operator-customer-gates' || github.ref_name == 'agent/fix-operator-customer-gates'
     runs-on: ubuntu-latest
     timeout-minutes: 90
 
     steps:
-      - name: Check out validation branch
+      - name: Check out source
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.head_ref || github.ref_name }}
           fetch-depth: 0
 
       - name: Set up Python
