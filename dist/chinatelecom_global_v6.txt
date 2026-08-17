@@ -1,6 +1,6 @@
 # Group: China Telecom (Global)
 # Key: chinatelecom_global
-# Generated: 2026-08-16T04:36:30Z
+# Generated: 2026-08-17T04:41:00Z
 # Total ASNs: 3
 # ASN List: 4134, 4809, 23764
 # Details:
@@ -1485,7 +1485,6 @@
 2a0d:8800::/29
 2a0d:bcc0::/31
 2a0d:bcc2::/32
-2a0d:bf00::/32
 2a0d:ce80::/29
 2a0e:4c80::/29
 2a0e:5c42::/32
