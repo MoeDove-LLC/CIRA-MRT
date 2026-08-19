@@ -1,6 +1,6 @@
 # Group: China Unicom (Global)
 # Key: chinaunicom_global
-# Generated: 2026-08-18T04:40:54Z
+# Generated: 2026-08-19T04:28:34Z
 # Total ASNs: 3
 # ASN List: 4837, 9929, 10099
 # Details:
@@ -11,7 +11,6 @@
 2001:67c:2800::/48
 2001:dc7::/32
 2001:df0:272::/48
-2001:df0:4e00::/48
 2001:4510:400::/40
 2001:4510:1480::/41
 2001:4511:1480::/41
