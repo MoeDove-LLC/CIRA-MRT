@@ -1,6 +1,6 @@
 # Group: China Telecom (China)
 # Key: chinatelecom
-# Generated: 2026-09-22T09:13:00Z
+# Generated: 2026-09-23T09:20:47Z
 # Total ASNs: 1
 # ASN List: 4134
 # Details:
@@ -88,6 +88,7 @@
 2401:71c0::/48
 2401:7d40::/32
 2401:a140:1::/48
+2401:a540::/32
 2401:b180::/32
 2401:b680::/32
 2401:be00::/48
