@@ -1,6 +1,6 @@
 # Group: China Mobile (China)
 # Key: chinamobile
-# Generated: 2026-10-17T08:23:30Z
+# Generated: 2026-10-18T08:47:21Z
 # Total ASNs: 1
 # ASN List: 9808
 # Details:
