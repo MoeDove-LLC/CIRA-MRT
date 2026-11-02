@@ -1,6 +1,6 @@
 # Group: Education & Research Network (China)
 # Key: cernet_edu
-# Generated: 2026-11-01T11:17:45Z
+# Generated: 2026-11-02T11:55:46Z
 # Total ASNs: 3
 # ASN List: 4538, 23911, 7497
 # Details:

@@ -1,6 +1,6 @@
 # Group: China Domestic (China)
 # Key: china_domestic_all
-# Generated: 2026-11-01T11:17:45Z
+# Generated: 2026-11-02T11:55:46Z
 # Total ASNs: 7
 # ASN List: 4134, 4837, 9929, 9808, 4538, 23911, 7497
 # Details:
@@ -38,6 +38,7 @@
 2400:6e60:1301::/48
 2400:7100::/32
 2400:75aa::/32
+2400:79c0:1604::/48
 2400:7fc0::/40
 2400:7fc0:220::/44
 2400:7fc0:240::/44
